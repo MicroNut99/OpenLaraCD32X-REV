@@ -1,0 +1,44 @@
+# OpenLara CD32X - which music goes on which CD audio track.
+#
+#   <game track>  <start of a file name in soundtrack_wav/>      (one line per track)
+#
+# The engine asks for the ORIGINAL game's track numbers (2-59).  The disc is built so that
+# disc track N = game track N.  Every number NOT listed here becomes 2 s of silence.
+#   2-5, 57-59   loop (title music, level ambience)       everything else plays once
+#   4            title / menu music (the engine's TRACK_TR1_TITLE)
+#   3            the inventory/passport plays this one
+#   13           secret found
+#   5, 57-59     level ambience (Caves, Cistern, wind, Pyramid) - not on the album
+#   22-25        cut-scene sound (voices) - not on the album: from the game CD, see below
+#   6-21         music cues the levels trigger - fill in as you like (see the album list)
+02  00_01
+03  00_01
+04  00_01
+13  00_14
+05  00_01
+
+# OL-11: each level's own music (disc track 60 + level; 66/72/77/79 = cut-scenes)
+60  00_01    # title / menu
+61  00_08    # Lara's Home
+62  00_15    # Caves
+63  00_16    # City of Vilcabamba
+64  00_05    # Lost Valley
+65  00_06    # Tomb of Qualopec
+67  00_02    # St. Francis' Folly
+68  00_18    # Colosseum
+69  00_23    # Palace Midas
+70  00_19    # The Cistern
+71  00_03    # Tomb of Tihocan
+73  00_11    # City of Khamoon
+74  00_17    # Obelisk of Khamoon
+75  00_07    # Sanctuary of the Scion
+76  00_24    # Natla's Mines
+78  00_22    # Atlantis
+80  00_04    # The Great Pyramid
+
+# v1.3: the cut-scenes' sound (voices + music) from the original game CD -
+# tools/nrg_cut_audio.py copies it into soundtrack_wav/ (see README)
+22  cut22    # Atlantis cut-scene
+23  cut23    # Qualopec cut-scene
+24  cut24    # Natla's Mines cut-scene
+25  cut25    # Tihocan cut-scene

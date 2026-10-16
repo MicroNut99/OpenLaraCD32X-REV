@@ -1,0 +1,5282 @@
+diff --git a/src/fixed/camera.h b/src/fixed/camera.h
+index fc4b271..5381409 100644
+--- a/src/fixed/camera.h
++++ b/src/fixed/camera.h
+@@ -3,6 +3,10 @@
+ 
+ #include "common.h"
+ 
++#ifdef CD32X
++bool gCutToTitle = false;   // PASSPORT-1: cut-scene picked in the passport -> back to the title
++#endif
++
+ #define CAM_SPEED               (1 << 3)
+ #define CAM_ROT_SPEED           (1 << 9)
+ #define CAM_DIST_FOLLOW         1536
+@@ -15,6 +19,9 @@
+ 
+ void Camera::initCinematic()
+ {
++#ifdef CD32X
++    gCinematicCamera.timer = 0;     // PASSPORT-2: start at the first camera frame
++#endif
+     switch (gLevelID)
+     {
+         case LVL_TR1_CUT_1:
+@@ -72,6 +79,16 @@ void Camera::updateCinematic()
+ 
+     if (timer >= level.cameraFramesCount) {
+         timer = level.cameraFramesCount - 1;
++    #ifdef CD32X
++        extern LevelID gNextLevel;      // PASSPORT-3: game.h
++        if (gNextLevel != LVL_MAX) {
++            // already decided by an earlier update in this frame - keep it
++        } else
++        if (gCutToTitle) {              // PASSPORT-1: watched from the passport
++            gCutToTitle = false;
++            nextLevel(LVL_TR1_TITLE);
++        } else
++    #endif
+         nextLevel(LevelID(gLevelID + 1));
+     }
+ }
+diff --git a/src/fixed/common.h b/src/fixed/common.h
+index a7d39f1..747e231 100644
+--- a/src/fixed/common.h
++++ b/src/fixed/common.h
+@@ -2479,6 +2479,18 @@ enum StringID {
+     , STR_TR3_CITY
+     , STR_TR3_CHAMBER
+     , STR_TR3_STPAUL
++#ifdef CD32X
++// PASSPORT-1: the cut-scenes in the passport
++    , STR_CD32X_CUT1
++    , STR_CD32X_CUT2
++    , STR_CD32X_CUT3
++    , STR_CD32X_CUT4
++// FMV-1: the movies in the passport
++    , STR_CD32X_FMV_CORE
++    , STR_CD32X_FMV_MANSION
++    , STR_CD32X_FMV_PYRAMID
++    , STR_CD32X_FMV_ESCAPE
++#endif
+ 
+     , STR_MAX
+ };
+diff --git a/src/fixed/enemy.h b/src/fixed/enemy.h
+index 4325cac..b99c4e9 100644
+--- a/src/fixed/enemy.h
++++ b/src/fixed/enemy.h
+@@ -440,6 +440,27 @@ struct Enemy : ItemObj
+         return level.zones[gSaveGame.flipped][extraE->nav.zoneType];
+     }
+ 
++    // ENEMIES-2: rough "can it shoot at Lara": in front, in range, not far above/below
++    bool canSee(int32 maxDist)
++    {
++        return tinfo.target && (tinfo.target->health > 0) && tinfo.front &&
++               (tinfo.dist < maxDist) && (abs(tinfo.target->pos.y - pos.y) < 2048);
++    }
++
++    // ENEMIES-2: an instant shot - the closer, the likelier it hits (as the full engine)
++    void shoot(int32 damage, int32 maxDist)
++    {
++        if (!tinfo.target || tinfo.dist >= maxDist)
++            return;
++        int32 chance = ((maxDist - tinfo.dist) * 0x8000) / maxDist - 0x2000;
++        if (rand_logic() < chance) {
++            vec3i p = tinfo.target->pos;
++            p.y -= 512;
++            fxBlood(p, 0, 0);
++            tinfo.target->hit(damage, p, 0);
++        }
++    }
++
+     void bite(int32 damage, const vec3i &offset, int32 joint)
+     {
+         if (!tinfo.target)
+@@ -727,6 +748,89 @@ struct Enemy : ItemObj
+ struct Doppelganger : Enemy
+ {
+     Doppelganger(Room* room) : Enemy(room, LARA_MAX_HEALTH, 10, 0, 0) {}
++
++#ifdef CD32X
++    /* -------------------------------------------------------------------------------------
++     * DOPPEL-1: Lara's double in Atlantis.  The fixed-point engine never implemented her
++     * (empty class: she stood still).  Ported from OpenLara's full engine (src/enemy.h,
++     * struct Doppelganger), which follows the original game:
++     *  - she mirrors Lara through the room centre (36, 60 sectors): same height, opposite
++     *    x/z, facing the other way, and plays exactly Lara's animation frame;
++     *  - shooting her hurts Lara (10 x the damage) and never her;
++     *  - when her mirrored spot is over the pit (floor > 1024 below) while Lara stands on
++     *    solid ground, she falls (Lara's fall animation), lands, fires the trigger under her
++     *    (opens the way on) and disappears.
++     * She needs no AI slot (no navigation), so activate() does not ask for one.
++     * ------------------------------------------------------------------------------------- */
++    enum {
++        CENTER_X  = 36 * 1024,
++        CENTER_Z  = 60 * 1024,
++        ANIM_FALL = 34              // Lara's model: falling forward
++    };
++
++    virtual void activate()
++    {
++        ItemObj::activate();
++        flags &= ~ITEM_FLAG_STATUS;
++        flags |= ITEM_FLAG_STATUS_ACTIVE;
++    }
++
++    virtual void hit(int32 damage, const vec3i &point, int32 soundId)
++    {
++        Lara* lara = getLara(pos);
++        if (lara) {
++            lara->hit(damage * 10, lara->pos, 0);
++        }
++    }
++
++    virtual void collide(Lara* lara, CollisionInfo* cinfo) {}
++
++    virtual void update()
++    {
++        Lara* lara = getLara(pos);
++        if (!lara)
++            return;
++
++        if (!(flags & ITEM_FLAG_GRAVITY))
++        {
++            pos.x = CENTER_X * 2 - lara->pos.x;     // mirror through the room centre
++            pos.y = lara->pos.y;
++            pos.z = CENTER_Z * 2 - lara->pos.z;
++            angle.x = lara->angle.x;
++            angle.z = lara->angle.z;
++            angle.y = lara->angle.y + ANGLE_180;
++            animIndex  = lara->animIndex;           // Lara's frame, drawn with her own meshes
++            frameIndex = lara->frameIndex;
++            state = goalState = lara->state;
++
++            int32 laraFloor = lara->room->getSector(lara->pos.x, lara->pos.z)->getFloor(lara->pos.x, lara->pos.y, lara->pos.z);
++
++            updateRoom();                           // room + roomFloor at the mirrored spot
++
++            if (!(lara->flags & ITEM_FLAG_GRAVITY) && (roomFloor - pos.y > 1024) && (laraFloor - lara->pos.y < 256))
++            {
++                animSet(level.models[ITEM_LARA].animIndex + ANIM_FALL, true);
++                flags |= ITEM_FLAG_GRAVITY;
++                vSpeed = 0;
++                hSpeed = 0;
++            }
++        }
++        else
++        {
++            animProcess();                          // falls (gravity in move())
++            updateRoom();
++
++            if (pos.y >= roomFloor)
++            {
++                pos.y = roomFloor;
++                checkTrigger(gLastFloorData, NULL); // the trigger under her (set by updateRoom)
++                flags &= ~(ITEM_FLAG_GRAVITY | ITEM_FLAG_STATUS);
++                flags |= ITEM_FLAG_STATUS_INVISIBLE;
++                deactivate();
++            }
++        }
++    }
++#endif
+ };
+ 
+ 
+@@ -1194,6 +1298,33 @@ struct Bat : Enemy
+ 
+ struct Crocodile : Enemy
+ {
++    // ENEMIES-2: crocodile, on land and in water (ported from the full engine)
++    enum {
++        HIT_MASK         = 0x000003FC,
++        DIST_BITE        = 435,
++        DIST_TURN        = 3072,
++        DAMAGE           = 25,
++        ANIM_DEATH_LAND  = 11,
++        ANIM_DEATH_WATER = 4
++    };
++
++    enum {  // land
++        STATE_NONE,
++        STATE_STOP,
++        STATE_RUN,
++        STATE_WALK,
++        STATE_TURN,
++        STATE_BITE,
++        STATE_UNUSED,
++        STATE_DEATH
++    };
++
++    enum {  // water
++        STATE_WATER_SWIM = 1,
++        STATE_WATER_BITE,
++        STATE_WATER_DEATH
++    };
++
+     Crocodile(Room* room) : Enemy(room, 20, 341, 600, AGGRESSION_LVL_2) {}
+ 
+     virtual void initExtra()
+@@ -1204,69 +1335,134 @@ struct Crocodile : Enemy
+         } else {
+             extraE->nav.stepHeight = 20 * 1024;
+             extraE->nav.dropHeight = -20 * 1024;
++            extraE->nav.vSpeed = 32;
+         }
+     }
+-};
+-
+ 
+-struct Lion : Enemy
+-{
+-    Lion(Room* room) : Enemy(room, 1, 341, 400, AGGRESSION_LVL_2)
++    virtual void hit(int32 damage, const vec3i &point, int32 soundId)
+     {
+-        switch (type)
+-        {
+-            case ITEM_LION_MALE   : health = 30; aggression = AGGRESSION_LVL_MAX; break;
+-            case ITEM_LION_FEMALE : health = 25; break;
+-            case ITEM_PUMA        : health = 40; break;
++        Enemy::hit(damage, point, soundId);
++        if (health <= 0) {
++            int32 anim = (type == ITEM_CROCODILE_LAND) ? ANIM_DEATH_LAND : ANIM_DEATH_WATER;
++            animSet(level.models[type].animIndex + anim, true);
+         }
+     }
+ 
+-    virtual void hit(int32 damage, const vec3i &point, int32 soundId)
++    virtual int32 updateState()
+     {
+-        Enemy::hit(damage, point, (type == ITEM_PUMA) ? 0 : SND_HIT_LION);
+-    }
++        if (health <= 0)
++            return goalState;
+ 
+-    virtual void initExtra()
+-    {
+-        extraE->nav.stepHeight = 256;
+-        extraE->nav.dropHeight = -1024;
+-    }
+-};
++        if (nextState == state)
++            nextState = STATE_NONE;
+ 
++        if (type != ITEM_CROCODILE_LAND)        // in the water
++        {
++            switch (state)
++            {
++                case STATE_WATER_SWIM:
++                {
++                    extraE->maxTurn = ANGLE(6);
++                    if (tinfo.front && hitMask)
++                        return STATE_WATER_BITE;
++                    break;
++                }
++                case STATE_WATER_BITE:
++                {
++                    if (hitMask) {
++                        if (nextState)
++                            return goalState;
++                        bite(DAMAGE, _vec3i(5, -21, 467), 9);
++                        nextState = STATE_WATER_SWIM;
++                    }
++                    return STATE_WATER_SWIM;
++                }
++            }
++            return goalState;
++        }
+ 
+-struct Gorilla : Enemy
+-{
+-    Gorilla(Room* room) : Enemy(room, 22, 341, 250, AGGRESSION_LVL_MAX) {}
++        switch (state)
++        {
++            case STATE_STOP:
++            {
++                if (tinfo.canAttack && tinfo.dist < DIST_BITE)
++                    return STATE_BITE;
++                switch (mood) {
++                    case MOOD_ESCAPE : return STATE_RUN;
++                    case MOOD_ATTACK : return (tinfo.front || tinfo.dist < DIST_TURN) ? STATE_RUN : STATE_TURN;
++                    case MOOD_STALK  : return STATE_WALK;
++                    default          : break;
++                }
++                break;
++            }
+ 
+-    virtual void initExtra()
+-    {
+-        extraE->nav.stepHeight = 512;
+-        extraE->nav.dropHeight = -1024;
+-    }
+-};
++            case STATE_RUN:
++            {
++                extraE->maxTurn = ANGLE(6);
++                if (tinfo.front && (hitMask & HIT_MASK))
++                    return STATE_STOP;
++                if (mood == MOOD_SLEEP)
++                    return STATE_STOP;
++                if (mood == MOOD_STALK)
++                    return STATE_WALK;
++                if (mood == MOOD_ATTACK && tinfo.dist > DIST_TURN && !tinfo.front)
++                    return STATE_STOP;
++                break;
++            }
++
++            case STATE_WALK:
++            {
++                extraE->maxTurn = ANGLE(6);
++                if (tinfo.front && (hitMask & HIT_MASK))
++                    return STATE_STOP;
++                if (mood == MOOD_SLEEP)
++                    return STATE_STOP;
++                if (mood == MOOD_ATTACK || mood == MOOD_ESCAPE)
++                    return STATE_RUN;
++                break;
++            }
+ 
++            case STATE_TURN:
++            {
++                tinfo.turn = ANGLE(6);
++                return tinfo.front ? STATE_WALK : goalState;
++            }
+ 
+-struct Rat : Enemy
+-{
+-    Rat(Room* room) : Enemy(room, 5, 204, 200, AGGRESSION_LVL_2) {}
++            case STATE_BITE:
++            {
++                if (!nextState) {
++                    bite(DAMAGE, _vec3i(5, -21, 467), 9);
++                    nextState = STATE_STOP;
++                }
++                break;
++            }
++        }
+ 
+-    virtual void hit(int32 damage, const vec3i &point, int32 soundId)
+-    {
+-        Enemy::hit(damage, point, SND_HIT_RAT);
++        return goalState;
+     }
+ };
+ 
+ 
+-struct Rex : Enemy
++struct Lion : Enemy
+ {
++    Lion(Room* room) : Enemy(room, 1, 341, 400, AGGRESSION_LVL_2)
++    {
++        switch (type)
++        {
++            case ITEM_LION_MALE   : health = 30; aggression = AGGRESSION_LVL_MAX; break;
++            case ITEM_LION_FEMALE : health = 25; break;
++            case ITEM_PUMA        : health = 40; break;
++        }
++    }
++
++    // ENEMIES-1: lion / lioness / puma behaviour (ported from the full engine)
+     enum {
+-        HIT_MASK = 0x00003000,  // head
+-        DIST_BITE = 1500,
+-        DIST_WALK = 4096,
+-        DIST_RUN = 5120,
+-        DAMAGE_RUN = 10,
+-        DAMAGE_WALK = 1,
+-        DAMAGE_FATAL = 1000
++        HIT_MASK        = 0x380066,
++        DIST_ATTACK     = 1024,
++        DAMAGE_ATTACK   = 150,
++        DAMAGE_BITE     = 250,
++        ANIM_DEATH_LION = 7,
++        ANIM_DEATH_PUMA = 4
+     };
+ 
+     enum {
+@@ -1274,30 +1470,29 @@ struct Rex : Enemy
+         STATE_STOP,
+         STATE_WALK,
+         STATE_RUN,
+-        STATE_UNUSED,
++        STATE_ATTACK,
+         STATE_DEATH,
+         STATE_ROAR,
+-        STATE_BITE,
+-        STATE_FATAL
++        STATE_BITE
+     };
+ 
+-    Rex(Room* room) : Enemy(room, 100, 341, 2000, AGGRESSION_LVL_MAX) {}
+-
+-    virtual int32 updateState()
++    virtual void hit(int32 damage, const vec3i &point, int32 soundId)
+     {
++        Enemy::hit(damage, point, (type == ITEM_PUMA) ? 0 : SND_HIT_LION);
++
+         if (health <= 0) {
+-            return (state == STATE_STOP) ? STATE_DEATH : STATE_STOP;
++            int32 anim = (type == ITEM_PUMA) ? ANIM_DEATH_PUMA : ANIM_DEATH_LION;
++            animSet(level.models[type].animIndex + anim + RAND_LOGIC(2), true);
+         }
++    }
+ 
+-        extraE->rotNeck = (extraE->rotHead >>= 1);
+-
+-        if (hitMask)
+-        {
+-            tinfo.target->hit((state == STATE_RUN) ? DAMAGE_RUN : DAMAGE_WALK, _vec3i(0, 0, 0), 0);
+-        }
++    virtual int32 updateState()
++    {
++        if (health <= 0)
++            return goalState;
+ 
+-        bool walk = (tinfo.canAttack && (tinfo.dist > DIST_BITE) && (tinfo.dist < DIST_WALK)) ||
+-                    (tinfo.behind && !tinfo.front && (mood != MOOD_ESCAPE));
++        if (nextState == state)
++            nextState = STATE_NONE;
+ 
+         switch (state)
+         {
+@@ -1305,20 +1500,21 @@ struct Rex : Enemy
+             {
+                 if (nextState)
+                     return nextState;
+-                if (tinfo.canAttack && (tinfo.dist < DIST_BITE))
+-                    return STATE_BITE;
+-                if ((mood == MOOD_SLEEP) || walk)
++                if (mood == MOOD_SLEEP)
+                     return STATE_WALK;
++                if (tinfo.front && (hitMask & HIT_MASK))
++                    return STATE_BITE;
++                if (tinfo.front && tinfo.dist < DIST_ATTACK)
++                    return STATE_ATTACK;
+                 return STATE_RUN;
+             }
+ 
+             case STATE_WALK:
+             {
+                 extraE->maxTurn = ENEMY_TURN_2;
+-                if ((mood != MOOD_SLEEP) && !walk)
++                if (mood != MOOD_SLEEP)
+                     return STATE_STOP;
+-                if (tinfo.front && (rand_logic() < 0x200))
+-                {
++                if (rand_logic() < 0x0D) {
+                     nextState = STATE_ROAR;
+                     return STATE_STOP;
+                 }
+@@ -1327,41 +1523,31 @@ struct Rex : Enemy
+ 
+             case STATE_RUN:
+             {
+-                extraE->maxTurn = ENEMY_TURN_4;
+-                if (((tinfo.dist < DIST_RUN) && tinfo.canAttack) || walk)
++                extraE->maxTurn = ENEMY_TURN_5;
++                tinfo.tilt = tinfo.turn;
++                if ((mood == MOOD_SLEEP) ||
++                    (tinfo.front && tinfo.dist < DIST_ATTACK) ||
++                    (tinfo.front && (hitMask & HIT_MASK)))
+                     return STATE_STOP;
+-                if ((mood != MOOD_ESCAPE) && tinfo.front && (rand_logic() < 0x200))
+-                {
++                if (mood == MOOD_ESCAPE && rand_logic() < 0x0D) {
+                     nextState = STATE_ROAR;
+                     return STATE_STOP;
+                 }
+-                if (mood == MOOD_SLEEP)
+-                    return STATE_STOP;
+                 break;
+             }
+ 
+-            case STATE_BITE:
++            case STATE_ROAR:
+             {
+-                nextState = STATE_WALK;
+-                if (hitMask & HIT_MASK)
+-                {
+-                    angle.x = 0;
+-                    angle.z = 0;
+-
+-                    tinfo.target->pos = pos;
+-                    tinfo.target->angle = angle;
+-                    tinfo.target->flags &= ~ITEM_FLAG_GRAVITY;
+-                    tinfo.target->hit(DAMAGE_FATAL, _vec3i(0, 0, 0), 0);
+-                    tinfo.target->meshSwap(ITEM_LARA_SPEC, 0xFFFFFFFF);
+-                    tinfo.target->animSet(level.models[ITEM_LARA_SPEC].animIndex + 1, true);
+-
+-                    if (tinfo.target->room != room)
+-                    {
+-                        tinfo.target->room->remove(tinfo.target);
+-                        room->add(tinfo.target);
+-                    }
++                extraE->maxTurn = ENEMY_TURN_2;
++                break;
++            }
+ 
+-                    return STATE_FATAL;
++            case STATE_ATTACK:
++            case STATE_BITE:
++            {
++                if (!nextState && (hitMask & HIT_MASK)) {
++                    bite((state == STATE_ATTACK) ? DAMAGE_ATTACK : DAMAGE_BITE, _vec3i(-2, -10, 132), 21);
++                    nextState = STATE_STOP;
+                 }
+                 break;
+             }
+@@ -1369,44 +1555,50 @@ struct Rex : Enemy
+ 
+         return goalState;
+     }
++
++    virtual void initExtra()
++    {
++        extraE->nav.stepHeight = 256;
++        extraE->nav.dropHeight = -1024;
++    }
+ };
+ 
+ 
+-struct Raptor : Enemy
++struct Gorilla : Enemy
+ {
++    // ENEMIES-1: gorilla behaviour (ported from the full engine; no wall climbing / side steps)
+     enum {
+-        HIT_MASK = 0xFF7C00,  // hands and head
+-
+-        DIST_BITE = 680,
+-        DIST_ATTACK = 1536,
+-
+-        DAMAGE_ATTACK = 100,
+-
+-        ANIM_DEATH_1 = 9,
+-        ANIM_DEATH_2 = 10
++        HIT_MASK        = 0x00FF00,
++        DIST_ATTACK     = 430,
++        DIST_AGGRESSION = 2048,
++        DAMAGE_ATTACK   = 200,
++        START_HEALTH    = 22,
++        ANIM_DEATH      = 7
+     };
+ 
+     enum {
+-        STATE_NONE = 0,
+-        STATE_DEATH = 0,
++        STATE_NONE,
+         STATE_STOP,
+-        STATE_WALK,
+-        STATE_RUN,
+-        STATE_ATTACK_1,
+         STATE_UNUSED,
+-        STATE_ROAR,
+-        STATE_ATTACK_2,
+-        STATE_BITE
++        STATE_RUN,
++        STATE_ATTACK,
++        STATE_DEATH,
++        STATE_IDLE1,
++        STATE_IDLE2,
++        STATE_LEFT,
++        STATE_RIGHT,
++        STATE_JUMP,
++        STATE_CLIMB
+     };
+ 
+-    Raptor(Room* room) : Enemy(room, 20, 341, 400, AGGRESSION_LVL_3) {}
++    Gorilla(Room* room) : Enemy(room, START_HEALTH, 341, 250, AGGRESSION_LVL_MAX) {}
+ 
+-    virtual void hit(int32 damage, const vec3i& point, int32 soundId)
++    virtual void hit(int32 damage, const vec3i &point, int32 soundId)
+     {
+-        Enemy::hit(damage, point, 0);
++        Enemy::hit(damage, point, soundId);
+ 
+         if (health <= 0) {
+-            animSet(level.models[type].animIndex + ANIM_DEATH_1 + RAND_LOGIC(2), true);
++            animSet(level.models[type].animIndex + ANIM_DEATH + RAND_LOGIC(2), true);
+         }
+     }
+ 
+@@ -1415,143 +1607,1317 @@ struct Raptor : Enemy
+         if (health <= 0)
+             return goalState;
+ 
++        if (nextState == state)
++            nextState = STATE_NONE;
++
++        // angry once Lara is close or it has been shot (the full engine keeps a flag for this)
++        bool angry = (tinfo.dist < DIST_AGGRESSION) || (health < START_HEALTH);
++
+         switch (state)
+         {
+-            case STATE_STOP: {
++            case STATE_STOP:
++            {
+                 if (nextState)
+                     return nextState;
+-                if ((hitMask & HIT_MASK) || (tinfo.canAttack && tinfo.dist < DIST_BITE))
+-                    return STATE_BITE;
+                 if (tinfo.canAttack && tinfo.dist < DIST_ATTACK)
+-                    return STATE_ATTACK_1;
+-                if (mood == MOOD_SLEEP)
+-                    return STATE_WALK;
++                    return STATE_ATTACK;
++                if (!angry && tinfo.front) {
++                    int32 r = rand_logic() & 511;
++                    if (r < 120) return STATE_JUMP;
++                    if (r < 240) return STATE_IDLE1;
++                    if (r < 360) return STATE_IDLE2;
++                }
+                 return STATE_RUN;
+             }
+ 
+-            case STATE_WALK: {
+-                extraE->maxTurn = ENEMY_TURN_1;
+-                tinfo.tilt = tinfo.turn >> 1;
+-
+-                if (mood != MOOD_SLEEP)
++            case STATE_RUN:
++            {
++                extraE->maxTurn = ENEMY_TURN_5;
++                tinfo.tilt = tinfo.turn;
++                if (!angry && tinfo.front)
+                     return STATE_STOP;
+-
+-                if (rand_logic() < 0x100) {
+-                    nextState = STATE_ROAR;
++                if (tinfo.front && (hitMask & HIT_MASK)) {
++                    nextState = STATE_ATTACK;
+                     return STATE_STOP;
+                 }
+-                break;
+-            }
+-
+-            case STATE_RUN: {
+-                extraE->maxTurn = ENEMY_TURN_4;
+-                tinfo.tilt = tinfo.turn;
+-
+-                if (hitMask & HIT_MASK)
+-                    return STATE_STOP;
+-
+-                if (tinfo.canAttack && tinfo.dist < DIST_ATTACK)
+-                {
+-                    if (goalState != STATE_RUN)
++                if (mood != MOOD_ESCAPE) {
++                    int32 r = rand_logic();
++                    if (r < 160)
++                        nextState = STATE_JUMP;
++                    else if (r < 320)
++                        nextState = STATE_IDLE1;
++                    else if (r < 480)
++                        nextState = STATE_IDLE2;
++                    else
+                         break;
+-                    return (rand_logic() < 0x2000) ? STATE_STOP : STATE_ATTACK_2;
+-                }
+-
+-                if (tinfo.front && (mood != MOOD_ESCAPE) && (rand_logic() < 0x100))
+-                {
+-                    nextState = STATE_ROAR;
+                     return STATE_STOP;
+                 }
+-
+-                if (mood == MOOD_SLEEP)
+-                    return STATE_STOP;
+                 break;
+             }
+ 
+-            case STATE_ATTACK_1:
+-            case STATE_ATTACK_2:
+-            case STATE_BITE:
++            case STATE_ATTACK:
+             {
+-                tinfo.tilt = tinfo.turn;
+-                if (!nextState && tinfo.front && (hitMask & HIT_MASK)) {
+-                    bite(DAMAGE_ATTACK, _vec3i(0, 66, 318), 22);
+-                    nextState = (state == STATE_ATTACK_2) ? STATE_RUN : STATE_STOP;
++                if (!nextState && (hitMask & HIT_MASK)) {
++                    bite(DAMAGE_ATTACK, _vec3i(0, -19, 75), 15);
++                    nextState = STATE_STOP;
+                 }
+                 break;
+             }
++
++            case STATE_LEFT:
++            case STATE_RIGHT:
++                return STATE_STOP;
+         }
+ 
+         return goalState;
+     }
++
++    virtual void initExtra()
++    {
++        extraE->nav.stepHeight = 512;
++        extraE->nav.dropHeight = -1024;
++    }
+ };
+ 
+ 
+-struct Mutant : Enemy
++struct Rat : Enemy
+ {
+-    Mutant(Room* room) : Enemy(room, 50, 341, 150, AGGRESSION_LVL_MAX) {}
+-};
++    // ENEMIES-1: rat behaviour (ported from the full engine)
++    enum {
++        HIT_MASK         = 0x0300018F,
++        DIST_BITE        = 341,
++        DIST_ATTACK      = 1536,
++        WAIT_CHANCE      = 0x148,          // 1 % per frame, as RAT_WAIT
++        DAMAGE           = 20,
++        ANIM_DEATH_LAND  = 8,
++        ANIM_DEATH_WATER = 2
++    };
+ 
++    enum {  // land
++        STATE_NONE,
++        STATE_STOP,
++        STATE_ATTACK,
++        STATE_RUN,
++        STATE_BITE,
++        STATE_DEATH,
++        STATE_WAIT
++    };
+ 
+-struct Centaur : Enemy
+-{
+-    Centaur(Room* room) : Enemy(room, 120, 341, 400, AGGRESSION_LVL_MAX) {}
+-};
++    enum {  // water
++        STATE_WATER_SWIM = 1,
++        STATE_WATER_BITE,
++        STATE_WATER_DEATH
++    };
+ 
++    Rat(Room* room) : Enemy(room, 5, 204, 200, AGGRESSION_LVL_2) {}
+ 
+-struct Mummy : Enemy
+-{
+-    Mummy(Room* room) : Enemy(room, 18, 10, 0, AGGRESSION_LVL_MAX) {}
+-};
++    virtual void hit(int32 damage, const vec3i &point, int32 soundId)
++    {
++        Enemy::hit(damage, point, SND_HIT_RAT);
+ 
++        if (health <= 0) {
++            int32 anim = (type == ITEM_RAT_WATER) ? ANIM_DEATH_WATER : ANIM_DEATH_LAND;
++            animSet(level.models[type].animIndex + anim, true);
++        }
++    }
+ 
+-struct Larson : Enemy
+-{
+-    Larson(Room* room) : Enemy(room, 50, 102, 0, AGGRESSION_LVL_MAX) {}
+-};
++    virtual int32 updateState()
++    {
++        if (health <= 0)
++            return goalState;
+ 
++        if (nextState == state)
++            nextState = STATE_NONE;
+ 
+-struct Pierre : Enemy
+-{
+-    Pierre(Room* room) : Enemy(room, 70, 102, 0, AGGRESSION_LVL_MAX) {}
+-};
++        if (type == ITEM_RAT_WATER)
++        {
++            switch (state)
++            {
++                case STATE_WATER_SWIM:
++                {
++                    extraE->maxTurn = ANGLE(6);
++                    if (tinfo.front && (hitMask & HIT_MASK))
++                        return STATE_WATER_BITE;
++                    break;
++                }
++                case STATE_WATER_BITE:
++                {
++                    if (!nextState && tinfo.front && (hitMask & HIT_MASK)) {
++                        bite(DAMAGE, _vec3i(0, -11, 108), 3);
++                        nextState = STATE_WATER_SWIM;
++                    }
++                    return STATE_WATER_SWIM;
++                }
++            }
++            return goalState;
++        }
+ 
++        switch (state)
++        {
++            case STATE_STOP:
++            {
++                if (nextState)
++                    return nextState;
++                if (tinfo.canAttack && tinfo.dist < DIST_BITE)
++                    return STATE_BITE;
++                return STATE_RUN;
++            }
+ 
+-struct Skater : Enemy
+-{
+-    Skater(Room* room) : Enemy(room, 125, 204, 0, AGGRESSION_LVL_MAX) {}
++            case STATE_RUN:
++            {
++                extraE->maxTurn = ANGLE(6);
++                tinfo.tilt = tinfo.turn;
++                if (tinfo.front && (hitMask & HIT_MASK))
++                    return STATE_STOP;
++                if (tinfo.canAttack && tinfo.dist < DIST_ATTACK)
++                    return STATE_ATTACK;
++                if (tinfo.front && rand_logic() < WAIT_CHANCE) {
++                    nextState = STATE_WAIT;
++                    return STATE_STOP;
++                }
++                break;
++            }
+ 
+-    virtual void hit(int32 damage, const vec3i &point, int32 soundId)
+-    {
+-        Enemy::hit(damage, point, SND_HIT_SKATER);
++            case STATE_ATTACK:
++            case STATE_BITE:
++            {
++                if (!nextState && tinfo.front && (hitMask & HIT_MASK)) {
++                    bite(DAMAGE, _vec3i(0, -11, 108), 3);
++                    nextState = (state == STATE_ATTACK) ? STATE_RUN : STATE_STOP;
++                }
++                break;
++            }
++
++            case STATE_WAIT:
++            {
++                if (mood == MOOD_SLEEP || rand_logic() < WAIT_CHANCE)
++                    return STATE_STOP;
++                break;
++            }
++        }
++
++        return goalState;
+     }
+ };
+ 
+ 
+-struct Cowboy : Enemy
++struct Rex : Enemy
+ {
+-    Cowboy(Room* room) : Enemy(room, 150, 102, 0, AGGRESSION_LVL_MAX) {}
+-};
++    enum {
++        HIT_MASK = 0x00003000,  // head
++        DIST_BITE = 1500,
++        DIST_WALK = 4096,
++        DIST_RUN = 5120,
++        DAMAGE_RUN = 10,
++        DAMAGE_WALK = 1,
++        DAMAGE_FATAL = 1000
++    };
++
++    enum {
++        STATE_NONE,
++        STATE_STOP,
++        STATE_WALK,
++        STATE_RUN,
++        STATE_UNUSED,
++        STATE_DEATH,
++        STATE_ROAR,
++        STATE_BITE,
++        STATE_FATAL
++    };
+ 
++    Rex(Room* room) : Enemy(room, 100, 341, 2000, AGGRESSION_LVL_MAX) {}
+ 
+-struct MrT : Enemy
+-{
+-    MrT(Room* room) : Enemy(room, 200, 102, 0, AGGRESSION_LVL_MAX) {}
+-};
++    virtual int32 updateState()
++    {
++        if (health <= 0) {
++            return (state == STATE_STOP) ? STATE_DEATH : STATE_STOP;
++        }
+ 
++        extraE->rotNeck = (extraE->rotHead >>= 1);
+ 
+-struct Natla : Enemy
+-{
+-    Natla(Room* room) : Enemy(room, 400, 204, 0, AGGRESSION_LVL_MAX) {}
+-};
++        if (hitMask)
++        {
++            tinfo.target->hit((state == STATE_RUN) ? DAMAGE_RUN : DAMAGE_WALK, _vec3i(0, 0, 0), 0);
++        }
+ 
++        bool walk = (tinfo.canAttack && (tinfo.dist > DIST_BITE) && (tinfo.dist < DIST_WALK)) ||
++                    (tinfo.behind && !tinfo.front && (mood != MOOD_ESCAPE));
+ 
+-struct Adam : Enemy
+-{
+-    Adam(Room* room) : Enemy(room, 500, 341, 0, AGGRESSION_LVL_MAX) {}
++        switch (state)
++        {
++            case STATE_STOP:
++            {
++                if (nextState)
++                    return nextState;
++                if (tinfo.canAttack && (tinfo.dist < DIST_BITE))
++                    return STATE_BITE;
++                if ((mood == MOOD_SLEEP) || walk)
++                    return STATE_WALK;
++                return STATE_RUN;
++            }
+ 
+-    virtual void hit(int32 damage, const vec3i &point, int32 soundId)
+-    {
+-        Enemy::hit(damage, point, SND_HIT_ADAM);
++            case STATE_WALK:
++            {
++                extraE->maxTurn = ENEMY_TURN_2;
++                if ((mood != MOOD_SLEEP) && !walk)
++                    return STATE_STOP;
++                if (tinfo.front && (rand_logic() < 0x200))
++                {
++                    nextState = STATE_ROAR;
++                    return STATE_STOP;
++                }
++                break;
++            }
++
++            case STATE_RUN:
++            {
++                extraE->maxTurn = ENEMY_TURN_4;
++                if (((tinfo.dist < DIST_RUN) && tinfo.canAttack) || walk)
++                    return STATE_STOP;
++                if ((mood != MOOD_ESCAPE) && tinfo.front && (rand_logic() < 0x200))
++                {
++                    nextState = STATE_ROAR;
++                    return STATE_STOP;
++                }
++                if (mood == MOOD_SLEEP)
++                    return STATE_STOP;
++                break;
++            }
++
++            case STATE_BITE:
++            {
++                nextState = STATE_WALK;
++                if (hitMask & HIT_MASK)
++                {
++                    angle.x = 0;
++                    angle.z = 0;
++
++                    tinfo.target->pos = pos;
++                    tinfo.target->angle = angle;
++                    tinfo.target->flags &= ~ITEM_FLAG_GRAVITY;
++                    tinfo.target->hit(DAMAGE_FATAL, _vec3i(0, 0, 0), 0);
++                    tinfo.target->meshSwap(ITEM_LARA_SPEC, 0xFFFFFFFF);
++                    tinfo.target->animSet(level.models[ITEM_LARA_SPEC].animIndex + 1, true);
++
++                    if (tinfo.target->room != room)
++                    {
++                        tinfo.target->room->remove(tinfo.target);
++                        room->add(tinfo.target);
++                    }
++
++                    return STATE_FATAL;
++                }
++                break;
++            }
++        }
++
++        return goalState;
++    }
++};
++
++
++struct Raptor : Enemy
++{
++    enum {
++        HIT_MASK = 0xFF7C00,  // hands and head
++
++        DIST_BITE = 680,
++        DIST_ATTACK = 1536,
++
++        DAMAGE_ATTACK = 100,
++
++        ANIM_DEATH_1 = 9,
++        ANIM_DEATH_2 = 10
++    };
++
++    enum {
++        STATE_NONE = 0,
++        STATE_DEATH = 0,
++        STATE_STOP,
++        STATE_WALK,
++        STATE_RUN,
++        STATE_ATTACK_1,
++        STATE_UNUSED,
++        STATE_ROAR,
++        STATE_ATTACK_2,
++        STATE_BITE
++    };
++
++    Raptor(Room* room) : Enemy(room, 20, 341, 400, AGGRESSION_LVL_3) {}
++
++    virtual void hit(int32 damage, const vec3i& point, int32 soundId)
++    {
++        Enemy::hit(damage, point, 0);
++
++        if (health <= 0) {
++            animSet(level.models[type].animIndex + ANIM_DEATH_1 + RAND_LOGIC(2), true);
++        }
++    }
++
++    virtual int32 updateState()
++    {
++        if (health <= 0)
++            return goalState;
++
++        switch (state)
++        {
++            case STATE_STOP: {
++                if (nextState)
++                    return nextState;
++                if ((hitMask & HIT_MASK) || (tinfo.canAttack && tinfo.dist < DIST_BITE))
++                    return STATE_BITE;
++                if (tinfo.canAttack && tinfo.dist < DIST_ATTACK)
++                    return STATE_ATTACK_1;
++                if (mood == MOOD_SLEEP)
++                    return STATE_WALK;
++                return STATE_RUN;
++            }
++
++            case STATE_WALK: {
++                extraE->maxTurn = ENEMY_TURN_1;
++                tinfo.tilt = tinfo.turn >> 1;
++
++                if (mood != MOOD_SLEEP)
++                    return STATE_STOP;
++
++                if (rand_logic() < 0x100) {
++                    nextState = STATE_ROAR;
++                    return STATE_STOP;
++                }
++                break;
++            }
++
++            case STATE_RUN: {
++                extraE->maxTurn = ENEMY_TURN_4;
++                tinfo.tilt = tinfo.turn;
++
++                if (hitMask & HIT_MASK)
++                    return STATE_STOP;
++
++                if (tinfo.canAttack && tinfo.dist < DIST_ATTACK)
++                {
++                    if (goalState != STATE_RUN)
++                        break;
++                    return (rand_logic() < 0x2000) ? STATE_STOP : STATE_ATTACK_2;
++                }
++
++                if (tinfo.front && (mood != MOOD_ESCAPE) && (rand_logic() < 0x100))
++                {
++                    nextState = STATE_ROAR;
++                    return STATE_STOP;
++                }
++
++                if (mood == MOOD_SLEEP)
++                    return STATE_STOP;
++                break;
++            }
++
++            case STATE_ATTACK_1:
++            case STATE_ATTACK_2:
++            case STATE_BITE:
++            {
++                tinfo.tilt = tinfo.turn;
++                if (!nextState && tinfo.front && (hitMask & HIT_MASK)) {
++                    bite(DAMAGE_ATTACK, _vec3i(0, 66, 318), 22);
++                    nextState = (state == STATE_ATTACK_2) ? STATE_RUN : STATE_STOP;
++                }
++                break;
++            }
++        }
++
++        return goalState;
++    }
++};
++
++
++struct Mutant : Enemy
++{
++    // ENEMIES-2: winged / shooting / ground mutants (Egypt, Atlantis).  Ported from the full
++    // engine; the projectiles are instant shots here, the winged one flies like the bat.
++    enum {
++        HIT_MASK        = 0x0678,
++        DIST_ATTACK_1   = 600,
++        DIST_ATTACK_2   = 2560,
++        DIST_ATTACK_3   = 300,
++        DIST_SHOT       = 3840,
++        DIST_STALK      = 4608,
++        DAMAGE_SHOT     = 50
++    };
++
++    enum {
++        STATE_NONE,
++        STATE_STOP,
++        STATE_WALK,
++        STATE_RUN,
++        STATE_ATTACK_1,
++        STATE_DEATH,
++        STATE_LOOKING,
++        STATE_ATTACK_2,
++        STATE_ATTACK_3,
++        STATE_AIM_1,
++        STATE_AIM_2,
++        STATE_FIRE,
++        STATE_IDLE,
++        STATE_FLY
++    };
++
++    Mutant(Room* room) : Enemy(room, 50, 341, 150, AGGRESSION_LVL_MAX) {}
++
++    virtual int32 updateState()
++    {
++        if (health <= 0)
++            return (state == STATE_FLY) ? STATE_STOP : STATE_DEATH;
++
++        if (nextState == state)
++            nextState = STATE_NONE;
++
++        bool flyer = false;
++        bool shooter = !(false);
++
++        bool shootFar = shooter && tinfo.front && (abs(tinfo.angle) < ANGLE(45)) &&
++                        (tinfo.dist > DIST_SHOT || !checkZone()) && canSee(8192);
++        bool wantFly = flyer && !shootFar && (mood == MOOD_ESCAPE || !checkZone());
++
++        if (state == STATE_FLY)
++        {
++            extraE->nav.stepHeight = 30 * 1024;
++            extraE->nav.dropHeight = -30 * 1024;
++            extraE->nav.vSpeed = 16;
++            extraE->maxTurn = ANGLE(6);
++            if (!wantFly && pos.y >= roomFloor - 128)
++                return STATE_STOP;
++            return STATE_FLY;
++        }
++
++        extraE->nav.stepHeight = 256;
++        extraE->nav.dropHeight = -256;
++
++        switch (state)
++        {
++            case STATE_STOP:
++            {
++                if (wantFly)
++                    return STATE_FLY;
++                if ((tinfo.canAttack && tinfo.dist < DIST_ATTACK_3) || (hitMask & HIT_MASK))
++                    return STATE_ATTACK_3;
++                if (tinfo.canAttack && tinfo.dist < DIST_ATTACK_1)
++                    return STATE_ATTACK_1;
++                if (shootFar)
++                    return (rand_logic() & 1) ? STATE_AIM_1 : STATE_AIM_2;
++                if (mood == MOOD_SLEEP || (mood == MOOD_STALK && tinfo.dist < DIST_STALK))
++                    return STATE_LOOKING;
++                return STATE_RUN;
++            }
++
++            case STATE_WALK:
++            {
++                extraE->maxTurn = ENEMY_TURN_2;
++                if (shootFar || wantFly || mood == MOOD_ATTACK || mood == MOOD_ESCAPE)
++                    return STATE_STOP;
++                if (mood == MOOD_SLEEP || (mood == MOOD_STALK && !checkZone())) {
++                    if (rand_logic() < 50)
++                        return STATE_LOOKING;
++                } else if (mood == MOOD_STALK && tinfo.dist > DIST_STALK) {
++                    return STATE_STOP;
++                }
++                break;
++            }
++
++            case STATE_RUN:
++            {
++                extraE->maxTurn = ANGLE(6);
++                tinfo.tilt = tinfo.turn;
++                if (wantFly || (hitMask & HIT_MASK))
++                    return STATE_STOP;
++                if (tinfo.canAttack && tinfo.dist < DIST_ATTACK_1)
++                    return STATE_STOP;
++                if (tinfo.front && tinfo.dist < DIST_ATTACK_2)
++                    return STATE_ATTACK_2;
++                if (shootFar)
++                    return STATE_STOP;
++                if (mood == MOOD_SLEEP || (mood == MOOD_STALK && tinfo.dist < DIST_STALK))
++                    return STATE_STOP;
++                break;
++            }
++
++            case STATE_LOOKING:
++            {
++                if (shootFar || wantFly)
++                    return STATE_STOP;
++                if (mood == MOOD_SLEEP) {
++                    if (rand_logic() < 256)
++                        return STATE_WALK;
++                } else if (mood == MOOD_STALK) {
++                    if (tinfo.dist >= DIST_STALK)
++                        return STATE_STOP;
++                    if (checkZone() && rand_logic() < 256)
++                        return STATE_WALK;
++                } else {
++                    return STATE_STOP;
++                }
++                break;
++            }
++
++            case STATE_ATTACK_1:
++            case STATE_ATTACK_2:
++            case STATE_ATTACK_3:
++            {
++                if (!nextState && (hitMask & HIT_MASK)) {
++                    int32 damage = (state == STATE_ATTACK_1) ? 150 : ((state == STATE_ATTACK_2) ? 100 : 200);
++                    bite(damage, _vec3i(-27, 98, 0), 10);
++                    nextState = STATE_STOP;
++                }
++                break;
++            }
++
++            case STATE_AIM_1:
++            case STATE_AIM_2:
++                return shootFar ? STATE_FIRE : STATE_STOP;
++
++            case STATE_FIRE:
++            {
++                if (!nextState) {
++                    shoot(DAMAGE_SHOT, 8192);
++                    nextState = STATE_STOP;
++                }
++                break;
++            }
++
++            case STATE_IDLE:
++                return STATE_STOP;
++        }
++
++        return goalState;
++    }
++};
++
++
++struct Centaur : Enemy
++{
++    // ENEMIES-2: centaur (Atlantis) - ported from the full engine; its fire bolt is an instant shot
++    enum {
++        HIT_MASK    = 0x030199,
++        DIST_RUN    = 1536,
++        DAMAGE_SHOT = 100,
++        DAMAGE_KICK = 200,
++        ANIM_DEATH  = 8
++    };
++
++    enum {
++        STATE_NONE,
++        STATE_STOP,
++        STATE_FIRE,
++        STATE_RUN,
++        STATE_AIM,
++        STATE_DEATH,
++        STATE_IDLE
++    };
++
++    Centaur(Room* room) : Enemy(room, 120, 341, 400, AGGRESSION_LVL_MAX) {}
++
++    virtual void hit(int32 damage, const vec3i &point, int32 soundId)
++    {
++        Enemy::hit(damage, point, soundId);
++        if (health <= 0)
++            animSet(level.models[type].animIndex + ANIM_DEATH, true);
++    }
++
++    virtual int32 updateState()
++    {
++        if (health <= 0)
++            return goalState;
++
++        if (nextState == state)
++            nextState = STATE_NONE;
++
++        switch (state)
++        {
++            case STATE_STOP:
++            {
++                if (nextState)
++                    return nextState;
++                if (tinfo.canAttack && tinfo.dist < DIST_RUN)
++                    return STATE_RUN;
++                if (canSee(8192))
++                    return STATE_AIM;
++                return STATE_RUN;
++            }
++
++            case STATE_RUN:
++            {
++                extraE->maxTurn = ANGLE(4);
++                tinfo.tilt = tinfo.turn;
++                if (tinfo.canAttack && tinfo.dist < DIST_RUN) {
++                    nextState = STATE_IDLE;
++                    return STATE_STOP;
++                }
++                if (canSee(8192)) {
++                    nextState = STATE_AIM;
++                    return STATE_STOP;
++                }
++                if (rand_logic() < 96) {
++                    nextState = STATE_IDLE;
++                    return STATE_STOP;
++                }
++                break;
++            }
++
++            case STATE_AIM:
++            {
++                if (nextState)
++                    return nextState;
++                return canSee(8192) ? STATE_FIRE : STATE_STOP;
++            }
++
++            case STATE_FIRE:
++            {
++                if (!nextState) {
++                    nextState = STATE_AIM;
++                    shoot(DAMAGE_SHOT, 8192);
++                }
++                break;
++            }
++
++            case STATE_IDLE:
++            {
++                if (!nextState && (hitMask & HIT_MASK)) {
++                    bite(DAMAGE_KICK, _vec3i(50, 30, 0), 5);
++                    nextState = STATE_STOP;
++                }
++                break;
++            }
++        }
++
++        return goalState;
++    }
++};
++
++
++struct Mummy : Enemy
++{
++    // ENEMIES-2: the mummy only falls when it is shot
++    enum {
++        STATE_NONE,
++        STATE_IDLE,
++        STATE_FALL
++    };
++
++    Mummy(Room* room) : Enemy(room, 18, 10, 0, AGGRESSION_LVL_MAX) {}
++
++    virtual int32 updateState()
++    {
++        if (health <= 0)
++            return STATE_FALL;
++        return goalState;
++    }
++};
++
++
++// ENEMIES-2: the human enemies (Larson, Pierre, the skater, the cowboy, Mr. T, Natla share this)
++struct Human : Enemy
++{
++    enum {
++        STATE_NONE,
++        STATE_STOP,
++        STATE_WALK,
++        STATE_RUN,
++        STATE_AIM,
++        STATE_DEATH,
++        STATE_WAIT,     // == STATE_FIRE for Mr. T and the cowboy
++        STATE_FIRE
++    };
++
++    enum {
++        DIST_WALK   = 3072,
++        DIST_SHOT   = 7168,
++        WAIT_CHANCE = 0x148
++    };
++
++    Human(Room* room, int32 _health, int32 _radius) : Enemy(room, _health, _radius, 0, AGGRESSION_LVL_MAX) {}
++
++    virtual int32 deathAnim() { return -1; }
++
++    virtual void hit(int32 damage, const vec3i &point, int32 soundId)
++    {
++        Enemy::hit(damage, point, soundId);
++        if (health <= 0) {
++            int32 a = deathAnim();
++            if (a >= 0)
++                animSet(level.models[type].animIndex + a, true);
++        }
++    }
++
++    void humanTurn()
++    {
++        if (state == STATE_RUN) {
++            extraE->maxTurn = ANGLE(6);
++            tinfo.tilt = tinfo.turn;
++        } else if (state == STATE_WALK) {
++            extraE->maxTurn = ANGLE(3);
++        }
++    }
++
++    // walk / run / aim / fire, as Larson and Pierre do it
++    int32 updateWalker(int32 damage, int32 shots)
++    {
++        humanTurn();
++
++        switch (state)
++        {
++            case STATE_STOP:
++            {
++                if (nextState)
++                    return nextState;
++                if (mood == MOOD_SLEEP)
++                    return (rand_logic() < WAIT_CHANCE) ? STATE_WAIT : STATE_WALK;
++                if (mood == MOOD_ESCAPE)
++                    return STATE_RUN;
++                return STATE_WALK;
++            }
++
++            case STATE_WAIT:
++            {
++                if (mood != MOOD_SLEEP)
++                    return STATE_STOP;
++                if (rand_logic() < WAIT_CHANCE) {
++                    nextState = STATE_WALK;
++                    return STATE_STOP;
++                }
++                break;
++            }
++
++            case STATE_WALK:
++            {
++                if (mood == MOOD_SLEEP && rand_logic() < WAIT_CHANCE)
++                    nextState = STATE_WAIT;
++                else if (mood == MOOD_ESCAPE)
++                    nextState = STATE_RUN;
++                else if (canSee(DIST_SHOT))
++                    nextState = STATE_AIM;
++                else if (!tinfo.front || tinfo.dist > DIST_WALK)
++                    nextState = STATE_RUN;
++                else
++                    break;
++                return STATE_STOP;
++            }
++
++            case STATE_RUN:
++            {
++                if (mood == MOOD_SLEEP && rand_logic() < WAIT_CHANCE)
++                    nextState = STATE_WAIT;
++                else if (canSee(DIST_SHOT))
++                    nextState = STATE_AIM;
++                else if (tinfo.front && tinfo.dist < DIST_WALK)
++                    nextState = STATE_WALK;
++                else
++                    break;
++                return STATE_STOP;
++            }
++
++            case STATE_AIM:
++            {
++                if (nextState)
++                    return nextState;
++                return canSee(DIST_SHOT) ? STATE_FIRE : STATE_STOP;
++            }
++
++            case STATE_FIRE:
++            {
++                if (!nextState) {
++                    for (int32 i = 0; i < shots; i++)
++                        shoot(damage, DIST_SHOT);
++                    nextState = STATE_AIM;
++                }
++                if (mood == MOOD_ESCAPE || !tinfo.target || tinfo.target->health <= 0)
++                    nextState = STATE_STOP;
++                break;
++            }
++        }
++
++        return goalState;
++    }
++
++    // stop / walk / run / aim / fire-in-WAIT, as the cowboy and Mr. T do it
++    int32 updateGunner(int32 damage, int32 shots, int32 distWalk)
++    {
++        humanTurn();
++
++        switch (state)
++        {
++            case STATE_STOP:
++            {
++                if (nextState)
++                    return nextState;
++                if (canSee(DIST_SHOT))
++                    return STATE_AIM;
++                if (mood == MOOD_SLEEP)
++                    return STATE_WALK;
++                return STATE_RUN;
++            }
++
++            case STATE_WALK:
++            {
++                if (mood == MOOD_ESCAPE || !tinfo.front)
++                    nextState = STATE_RUN;
++                else if (canSee(DIST_SHOT))
++                    nextState = STATE_AIM;
++                else if (tinfo.dist > distWalk)
++                    nextState = STATE_RUN;
++                else
++                    break;
++                return STATE_STOP;
++            }
++
++            case STATE_RUN:
++            {
++                if (mood == MOOD_ESCAPE || !tinfo.front)
++                    break;
++                if (canSee(DIST_SHOT))
++                    nextState = STATE_AIM;
++                else if (tinfo.dist < distWalk && tinfo.front)
++                    nextState = STATE_WALK;
++                else
++                    break;
++                return STATE_STOP;
++            }
++
++            case STATE_AIM:
++            {
++                if (nextState)
++                    return STATE_STOP;
++                return canSee(DIST_SHOT) ? STATE_WAIT : STATE_STOP;
++            }
++
++            case STATE_WAIT:    // fire
++            {
++                if (!nextState) {
++                    for (int32 i = 0; i < shots; i++)
++                        shoot(damage, DIST_SHOT);
++                    nextState = STATE_STOP;
++                }
++                if (mood == MOOD_ESCAPE)
++                    nextState = STATE_RUN;
++                break;
++            }
++        }
++
++        return goalState;
++    }
++};
++
++
++struct Larson : Human
++{
++    Larson(Room* room) : Human(room, 50, 102) {}
++
++    virtual int32 deathAnim() { return 15; }
++
++    virtual int32 updateState()
++    {
++        if (health <= 0)
++            return goalState;
++        if (nextState == state)
++            nextState = STATE_NONE;
++        return updateWalker(50, 1);
++    }
++};
++
++
++struct Pierre : Human
++{
++    Pierre(Room* room) : Human(room, 70, 102) {}
++
++    virtual int32 deathAnim() { return 12; }
++
++    virtual int32 updateState()
++    {
++        if (health <= 0)
++            return goalState;
++        // as in the original: Pierre cannot be killed until his last appearance (Tomb of
++        // Tihocan, marked "once" in the level) - before that he only gets away
++        if (!(flags & ITEM_FLAG_ONCE) && health <= 40) {
++            health = 40;
++            mood = MOOD_ESCAPE;
++        }
++        if (nextState == state)
++            nextState = STATE_NONE;
++        return updateWalker(25, 2);
++    }
++};
++
++
++struct Skater : Human
++{
++    enum {
++        SK_STOP,
++        SK_STAND_FIRE,
++        SK_MOVE,
++        SK_STEP,
++        SK_MOVE_FIRE,
++        SK_DEATH
++    };
++
++    Skater(Room* room) : Human(room, 125, 204) {}
++
++    virtual int32 deathAnim() { return 13; }
++
++    virtual void hit(int32 damage, const vec3i &point, int32 soundId)
++    {
++        Human::hit(damage, point, SND_HIT_SKATER);
++    }
++
++    virtual int32 updateState()
++    {
++        if (health <= 0)
++            return goalState;
++
++        switch (state)
++        {
++            case SK_STOP:
++            {
++                nextState = 0;
++                return canSee(DIST_SHOT) ? SK_STAND_FIRE : SK_MOVE;
++            }
++
++            case SK_MOVE:
++            {
++                nextState = 0;
++                extraE->maxTurn = ANGLE(4);
++                tinfo.tilt = tinfo.turn;
++                if (rand_logic() < 512)
++                    return SK_STEP;
++                if (canSee(DIST_SHOT))
++                    return (mood != MOOD_ESCAPE && tinfo.dist > 2560 && tinfo.dist < 4096) ? SK_STOP : SK_MOVE_FIRE;
++                break;
++            }
++
++            case SK_STEP:
++            {
++                extraE->maxTurn = ANGLE(4);
++                if (rand_logic() < 1024)
++                    return SK_MOVE;
++                break;
++            }
++
++            case SK_STAND_FIRE:
++            case SK_MOVE_FIRE:
++            {
++                if (state == SK_MOVE_FIRE)
++                    extraE->maxTurn = ANGLE(4);
++                if (!nextState && canSee(DIST_SHOT)) {
++                    int32 damage = (state == SK_STAND_FIRE) ? 50 : 40;
++                    shoot(damage, DIST_SHOT);
++                    shoot(damage, DIST_SHOT);
++                    nextState = 1;
++                }
++                if (mood == MOOD_ESCAPE || tinfo.dist < 1024)
++                    return SK_MOVE;
++                break;
++            }
++        }
++
++        return goalState;
++    }
++};
++
++
++struct Cowboy : Human
++{
++    Cowboy(Room* room) : Human(room, 150, 102) {}
++
++    virtual int32 deathAnim() { return 7; }
++
++    virtual int32 updateState()
++    {
++        if (health <= 0)
++            return goalState;
++        if (nextState == state)
++            nextState = STATE_NONE;
++        return updateGunner(70, 2, 3072);
++    }
++};
++
++
++struct MrT : Human
++{
++    MrT(Room* room) : Human(room, 200, 102) {}
++
++    virtual int32 deathAnim() { return 14; }
++
++    virtual int32 updateState()
++    {
++        if (health <= 0)
++            return goalState;
++        if (nextState == state)
++            nextState = STATE_NONE;
++        return updateGunner(150, 1, 4096);
++    }
++};
++
++
++struct Natla : Human
++{
++    // ENEMIES-2: Natla.  Stage 1 (health above 200): flies when she cannot shoot you, lands and
++    // fires three bolts.  At 200 she faints; after a while she gets up for stage 2: she runs
++    // and keeps shooting until she dies.
++    enum {
++        N_NONE,
++        N_STOP,
++        N_FLY,
++        N_RUN,
++        N_AIM,
++        N_FAINT,
++        N_FIRE,
++        N_FALL,
++        N_STAND,
++        N_DEATH
++    };
++
++    enum {
++        HALF_HEALTH  = 200,
++        FAINT_HEALTH = -8192,
++        WAKE_CHANCE  = 68           // ~16 s of fainting on average
++    };
++
++    Natla(Room* room) : Human(room, 400, 204) {}
++
++    void fly(bool on)
++    {
++        extraE->nav.stepHeight = on ? 256 * 80 : 256;
++        extraE->nav.dropHeight = on ? -256 * 80 : -256;
++        extraE->nav.vSpeed = on ? 16 : 0;
++    }
++
++    virtual int32 updateState()
++    {
++        if (health <= 0)
++        {
++            if (health == FAINT_HEALTH)                 // fainted, not dead
++            {
++                fly(false);
++                if (state == N_FALL) {
++                    if (pos.y < roomFloor) {
++                        flags |= ITEM_FLAG_GRAVITY;
++                        return N_FALL;
++                    }
++                    flags &= ~ITEM_FLAG_GRAVITY;
++                    pos.y = roomFloor;
++                    return N_FAINT;
++                }
++                if (state == N_FAINT && rand_logic() < WAKE_CHANCE) {
++                    health = HALF_HEALTH;
++                    return N_STAND;
++                }
++                return state == N_FAINT ? N_FAINT : goalState;
++            }
++            return N_DEATH;
++        }
++
++        if (nextState == state)
++            nextState = N_NONE;
++
++        bool canShot = tinfo.target && tinfo.target->health > 0 && canSee(DIST_SHOT);
++
++        if (health > HALF_HEALTH)                       // stage 1
++        {
++            bool flying = (state == N_FLY) && !(canShot && rand_logic() < 256);
++            fly(state == N_FLY);
++            extraE->maxTurn = ANGLE(3);
++
++            switch (state)
++            {
++                case N_STOP:
++                    return canShot ? N_AIM : N_FLY;
++
++                case N_FLY:
++                {
++                    if (canShot && rand_logic() < 0x0400)      // about one bolt a second
++                        shoot(100, DIST_SHOT);
++                    if (!flying && pos.y >= roomFloor - 128)
++                        return N_STOP;
++                    break;
++                }
++
++                case N_AIM:
++                {
++                    if (nextState)
++                        return nextState;
++                    return canShot ? N_FIRE : N_STOP;
++                }
++
++                case N_FIRE:
++                {
++                    if (!nextState) {
++                        shoot(100, DIST_SHOT);
++                        shoot(100, DIST_SHOT);
++                        shoot(100, DIST_SHOT);
++                        nextState = N_STOP;
++                    }
++                    break;
++                }
++            }
++            return goalState;
++        }
++
++        // stage 2
++        fly(false);
++        switch (state)
++        {
++            case N_RUN:
++            case N_STAND:
++            {
++                extraE->maxTurn = (state == N_RUN) ? ANGLE(6) : ANGLE(3);
++                if (state == N_RUN)
++                    tinfo.tilt = tinfo.turn;
++                if (canShot && rand_logic() < 0x0600)      // about every 2/3 s
++                    shoot(50, DIST_SHOT);
++                return (canShot && abs(tinfo.angle) < ANGLE(30)) ? N_STAND : N_RUN;
++            }
++
++            case N_FLY:
++                health = FAINT_HEALTH;
++                return N_FALL;
++
++            case N_STOP:
++            case N_AIM:
++            case N_FIRE:
++                health = FAINT_HEALTH;
++                return N_FAINT;
++        }
++        return goalState;
++    }
++};
++
++
++struct Adam : Enemy
++{
++    // ENEMIES-2: the giant mutant ("Torso", Great Pyramid).  Ported from the full engine.
++    enum {
++        HIT_MASK_HAND  = 0x3FF8000,
++        HIT_MASK_HANDS = 0x3FFFFF0,
++        DAMAGE         = 500,
++        DAMAGE_WALK    = 5,
++        DAMAGE_FATAL   = 1000,
++        DIST_ATTACK    = 2600,
++        DIST_FATAL     = 2250,
++        ANIM_DEATH     = 13
++    };
++
++    enum {
++        STATE_NONE,
++        STATE_STOP,
++        STATE_TURN_LEFT,
++        STATE_TURN_RIGHT,
++        STATE_ATTACK_1,
++        STATE_ATTACK_2,
++        STATE_ATTACK_3,
++        STATE_WALK,
++        STATE_BORN,
++        STATE_FALL,
++        STATE_UNUSED,
++        STATE_FATAL
++    };
++
++    Adam(Room* room) : Enemy(room, 500, 341, 0, AGGRESSION_LVL_MAX) {}
++
++    virtual void hit(int32 damage, const vec3i &point, int32 soundId)
++    {
++        Enemy::hit(damage, point, SND_HIT_ADAM);
++        if (health <= 0)
++            animSet(level.models[type].animIndex + ANIM_DEATH, true);
++    }
++
++    virtual int32 updateState()
++    {
++        if (health <= 0)
++            return goalState;
++
++        if (state == STATE_BORN)
++            return STATE_FALL;
++
++        if (state == STATE_FALL)
++        {
++            if (pos.y < roomFloor) {
++                flags |= ITEM_FLAG_GRAVITY;
++                return STATE_FALL;
++            }
++            flags &= ~ITEM_FLAG_GRAVITY;
++            pos.y = roomFloor;
++            return STATE_STOP;
++        }
++
++        if (!tinfo.target || tinfo.target->health <= 0)
++            return STATE_STOP;
++
++        if (hitMask)
++            tinfo.target->hit(DAMAGE_WALK, tinfo.target->pos, 0);
++
++        if (state == STATE_STOP || state == STATE_WALK || state == STATE_TURN_LEFT || state == STATE_TURN_RIGHT)
++            extraE->maxTurn = (abs(tinfo.angle) > ANGLE(10)) ? ANGLE(3) : 0;
++
++        switch (state)
++        {
++            case STATE_STOP:
++            {
++                nextState = STATE_NONE;
++                if (tinfo.angle > ANGLE(45))
++                    return STATE_TURN_RIGHT;
++                if (tinfo.angle < -ANGLE(45))
++                    return STATE_TURN_LEFT;
++                if (tinfo.dist < DIST_ATTACK) {
++                    if (tinfo.target->health <= DAMAGE) {
++                        if (tinfo.dist < DIST_FATAL)
++                            return STATE_ATTACK_3;
++                    } else {
++                        return (rand_logic() & 1) ? STATE_ATTACK_1 : STATE_ATTACK_2;
++                    }
++                }
++                return STATE_WALK;
++            }
++
++            case STATE_WALK:
++            {
++                if (tinfo.dist < DIST_ATTACK || tinfo.angle > ANGLE(45) || tinfo.angle < -ANGLE(45))
++                    return STATE_STOP;
++                break;
++            }
++
++            case STATE_TURN_RIGHT:
++            {
++                if (tinfo.angle < ANGLE(45))
++                    return STATE_STOP;
++                break;
++            }
++
++            case STATE_TURN_LEFT:
++            {
++                if (tinfo.angle > -ANGLE(45))
++                    return STATE_STOP;
++                break;
++            }
++
++            case STATE_ATTACK_1:
++            case STATE_ATTACK_2:
++            {
++                if (!nextState && (((state == STATE_ATTACK_1) && (hitMask & HIT_MASK_HAND)) ||
++                                   ((state == STATE_ATTACK_2) && (hitMask & HIT_MASK_HANDS)))) {
++                    tinfo.target->hit(DAMAGE, tinfo.target->pos, 0);
++                    nextState = STATE_STOP;
++                }
++                break;
++            }
++
++            case STATE_ATTACK_3:
++            {
++                if (hitMask & HIT_MASK_HAND) {
++                    tinfo.target->hit(DAMAGE_FATAL, tinfo.target->pos, 0);
++                    return STATE_FATAL;
++                }
++                break;
++            }
++        }
++
++        return goalState;
+     }
+ };
+ 
+diff --git a/src/fixed/inventory.h b/src/fixed/inventory.h
+index 4689809..592eb8f 100644
+--- a/src/fixed/inventory.h
++++ b/src/fixed/inventory.h
+@@ -870,9 +870,25 @@ struct Inventory
+ 
+             if (passportPage == PASSPORT_PAGE_LOAD_GAME)
+             {
++            #ifdef CD32X
++                #define CD32X_MOVIE_BASE 1000   /* FMV-1: option value 1000 + movie */
++                if (opt.value >= CD32X_MOVIE_BASE)
++                {
++                    extern bool osPlayVideo(int32 n);   /* main.cpp / fmv.inc */
++                    osPlayVideo(opt.value - CD32X_MOVIE_BASE);  /* then back to this page */
++                }
++                else
++                {
++                extern bool gCutToTitle;    /* PASSPORT-1: a cut-scene from here -> title after */
++                gCutToTitle = (opt.value == LVL_TR1_CUT_1) || (opt.value == LVL_TR1_CUT_2) ||
++                              (opt.value == LVL_TR1_CUT_3) || (opt.value == LVL_TR1_CUT_4);
++            #endif
+                 nextLevel(LevelID(opt.value));
+                 frameTarget = 0;
+                 nextState = INV_STATE_CLOSE;
++            #ifdef CD32X
++                }
++            #endif
+             }
+             
+             if (passportPage == PASSPORT_PAGE_SAVE_GAME)
+@@ -1247,8 +1263,47 @@ struct Inventory
+             {
+                 if (passportPage == PASSPORT_PAGE_LOAD_GAME)
+                 {
++                #ifdef CD32X
++                    /* CD32X passport: every level is on the disc */
++                    static const struct { LevelID id; StringID str; } passportLevels[] = {
++                        { LVL_TR1_1, STR_TR1_LEVEL1 },
++                        { LVL_TR1_2, STR_TR1_LEVEL2 },
++                        { LVL_TR1_3A, STR_TR1_LEVEL3A },
++                        { LVL_TR1_3B, STR_TR1_LEVEL3B },
++                        { LVL_TR1_4, STR_TR1_LEVEL4 },
++                        { LVL_TR1_5, STR_TR1_LEVEL5 },
++                        { LVL_TR1_6, STR_TR1_LEVEL6 },
++                        { LVL_TR1_7A, STR_TR1_LEVEL7A },
++                        { LVL_TR1_7B, STR_TR1_LEVEL7B },
++                        { LVL_TR1_8A, STR_TR1_LEVEL8A },
++                        { LVL_TR1_8B, STR_TR1_LEVEL8B },
++                        { LVL_TR1_8C, STR_TR1_LEVEL8C },
++                        { LVL_TR1_10A, STR_TR1_LEVEL10A },
++                        { LVL_TR1_10B, STR_TR1_LEVEL10B },
++                        { LVL_TR1_10C, STR_TR1_LEVEL10C },
++                    };
++                    for (int32 i = 0; i < int32(sizeof(passportLevels) / sizeof(passportLevels[0])); i++) {
++                        OPTION_BTN(passportLevels[i].str, passportLevels[i].id);
++                    }
++                    /* PASSPORT-1: the cut-scenes (in-engine scenes, CUT1-4.PKD on the disc) */
++                    OPTION_SPACE();
++                    OPTION_BTN(STR_CD32X_CUT1, LVL_TR1_CUT_1);
++                    OPTION_BTN(STR_CD32X_CUT2, LVL_TR1_CUT_2);
++                    OPTION_BTN(STR_CD32X_CUT3, LVL_TR1_CUT_3);
++                    OPTION_BTN(STR_CD32X_CUT4, LVL_TR1_CUT_4);
++                    /* FMV-1: the movies - title menu only (the movie goes where the level is) */
++                    if (gLevelID == LVL_TR1_TITLE)
++                    {
++                        OPTION_SPACE();
++                        OPTION_BTN(STR_CD32X_FMV_CORE, CD32X_MOVIE_BASE + 0);
++                        OPTION_BTN(STR_CD32X_FMV_MANSION, CD32X_MOVIE_BASE + 1);
++                        OPTION_BTN(STR_CD32X_FMV_PYRAMID, CD32X_MOVIE_BASE + 7);
++                        OPTION_BTN(STR_CD32X_FMV_ESCAPE, CD32X_MOVIE_BASE + 9);
++                    }
++                #else
+                     OPTION_BTN(STR_TR1_LEVEL1, LVL_TR1_1);
+                     OPTION_BTN(STR_TR1_LEVEL2, LVL_TR1_2);
++                #endif
+                     if (osCheckSave())
+                     {
+                         OPTION_SPACE();
+@@ -1306,6 +1361,19 @@ struct Inventory
+ 
+         int32 w = optionsWidth;
+         int32 h = optionsHeight;
++
++        /* CD32X passport: a list taller than the screen scrolls (8 rows visible) */
++        enum { OPT_VISIBLE = 8 };
++        int32 first = 0, last = optionsCount;
++        if (optionsCount > OPT_VISIBLE && h > OPT_VISIBLE * 18 + 4)
++        {
++            first = optionIndex - OPT_VISIBLE / 2;
++            if (first > optionsCount - OPT_VISIBLE) first = optionsCount - OPT_VISIBLE;
++            if (first < 0) first = 0;
++            last = first + OPT_VISIBLE;
++            h = OPT_VISIBLE * 18 + 4;
++        }
++
+         int32 y = (FRAME_HEIGHT - h) / 2 - 12;
+ 
+         renderFill((FRAME_WIDTH - w) / 2 + 1, y + 1, w - 2, h - 2, 25, 2);
+@@ -1315,7 +1383,7 @@ struct Inventory
+         h = 18;
+         y += 2;
+ 
+-        for (int32 i = 0; i < optionsCount; i++)
++        for (int32 i = first; i < last; i++)
+         {
+             const Option &opt = options[i];
+ 
+diff --git a/src/fixed/item.h b/src/fixed/item.h
+index 3a104dd..fddfd82 100644
+--- a/src/fixed/item.h
++++ b/src/fixed/item.h
+@@ -29,7 +29,7 @@ int32 alignOffset(int32 a, int32 b)
+ 
+ void* soundPlay(int16 id, const vec3i* pos)
+ {
+-#if defined(__32X__) || defined(__WIN32__) // TODO
++#if (defined(__32X__) && !defined(CD32X)) || defined(__WIN32__) // TODO  (OL-6: CD32X plays sounds)
+     return NULL;
+ #endif
+ 
+diff --git a/src/fixed/lang/en.h b/src/fixed/lang/en.h
+index e9eeb6d..cf2001e 100644
+--- a/src/fixed/lang/en.h
++++ b/src/fixed/lang/en.h
+@@ -389,6 +389,18 @@ const char* const STR_EN[STR_MAX] = { ""
+     , "Lost City Of Tinnos"
+     , "Meteorite Cavern"
+     , "All Hallows"
++#ifdef CD32X
++// PASSPORT-1: the cut-scenes in the passport (each plays after the level it is named after)
++    , "Cutscene Qualopec"           // PASSPORT-2: names reversed
++    , "Cutscene Tihocan"
++    , "Cutscene Natla's Mines"
++    , "Cutscene Atlantis"
++// FMV-1: the movies in the passport (named after their files)
++    , "Movie Core"
++    , "Movie Mansion"
++    , "Movie Pyramid"
++    , "Movie Escape"
++#endif
+ };
+ 
+ #endif
+\ No newline at end of file
+diff --git a/src/fixed/lara.h b/src/fixed/lara.h
+index 846ca62..0d185f2 100644
+--- a/src/fixed/lara.h
++++ b/src/fixed/lara.h
+@@ -2807,11 +2807,15 @@ struct Lara : ItemObj
+         if (keys & IK_UP)      input |= IN_UP;
+         if (keys & IK_DOWN)    input |= IN_DOWN;
+         if (keys & IK_SELECT)  input |= IN_SELECT;
++    #ifdef CD32X
++        if (keys & IK_START)   input |= IN_SELECT;  // CD32X: Start opens the inventory (as Mode)
++    #endif
+ 
+         if (extraL->camera.mode == CAMERA_MODE_FREE) {
+             input = 0;
+         }
+ 
++    #ifndef CD32X   // CD32X: no developer free camera on Start
+         if (keys & IK_START)   input |= IN_START;
+ 
+         if (isKeyHit(IN_START) && (inventory.state == INV_STATE_NONE))
+@@ -2822,6 +2826,7 @@ struct Lara : ItemObj
+                 extraL->camera.mode = CAMERA_MODE_FOLLOW;
+             }
+         }
++    #endif
+     }
+ 
+     void updateLook()
+diff --git a/src/platform/32x/32x.h b/src/platform/32x/32x.h
+index c06d4b3..2aa108a 100644
+--- a/src/platform/32x/32x.h
++++ b/src/platform/32x/32x.h
+@@ -155,6 +155,65 @@ extern "C"
+     CacheControl(0);\
+     CacheControl(SH2_CCTL_CP | SH2_CCTL_CE);
+ 
++/* =========================================================================================
++ * CD32X REV-1..4 - speed-ups after v1.3 (each one can be switched off on its own):
++ *   REV-1  CD32X_IDLE     wait loops pause between reads of a COMM / VDP register.  Both SH2s
++ *                         share ONE bus: a tight loop reading a register takes the bus over and
++ *                         over, so the OTHER SH2 (drawing, game logic) waits for it.  The pause
++ *                         runs from the SH2's cache (nop, counter in a register): no bus use.
++ *                         (Kobo hardware rule: never hammer a register, pause between polls.)
++ *                         Off: -DCD32X_NO_IDLE
++ *   REV-2  CD32X_FILL     the screen clear uses the 32X VDP's auto fill (main.cpp pageClear):
++ *                         the VDP writes the zeros itself, the SH2 bus stays free.
++ *                         Off: -DCD32X_NO_FILL
++ *   REV-3  CD32X_SDCODE   the C drawing code that runs per polygon (flush_ot, drawPolyY, the
++ *                         sprite / line / fill rasterizers) lives in SDRAM, like the asm
++ *                         rasterizers already do - a cache miss there costs less than in the cart.
++ *                         Off: -DCD32X_NO_SDCODE
++ *   REV-4  CD32X_HWDIV    the SH2's own divider for the split-line clipping (drawPolyY).
++ *                         Off: -DCD32X_NO_HWDIV
++ * Example: make CD32X=1 EXTRA="-DCD32X_NO_FILL"   (Makefile: EXTRA is added to the C flags)
++ * ========================================================================================= */
++#if defined(CD32X) && !defined(CD32X_NO_IDLE)
++    #define CD32X_IDLE
++#endif
++#if defined(CD32X) && !defined(CD32X_NO_FILL)
++    #define CD32X_FILL
++#endif
++#if defined(CD32X) && !defined(CD32X_NO_SDCODE)
++    #define CD32X_SDCODE
++#endif
++#if defined(CD32X) && !defined(CD32X_NO_HWDIV)
++    #define CD32X_HWDIV
++#endif
++
++#ifdef CD32X_IDLE
++/* REV-1: about 160 cycles (7 us) without touching the bus - the loop stays in the cache */
++static inline void marsIdle()
++{
++    for (int k = 0; k < 32; k++)
++        __asm__ volatile ("nop");
++}
++#define MARS_WAIT() {while (MARS_SYS_COMM4) marsIdle();}
++#else
++static inline void marsIdle()
++{
++    for (volatile int k = 0; k < 16; k++) {}    /* v1.3's pause */
++}
+ #define MARS_WAIT() {while (MARS_SYS_COMM4);}
++#endif
++
++#ifdef CD32X_SDCODE
++/* REV-3: code placed in SDRAM (.data.* is copied to SDRAM at start, see mars.ld / output.map) */
++#define SDRAM_CODE  __attribute__((section(".data.sdcode"), aligned(16)))
++#else
++#define SDRAM_CODE
++#endif
++
++/* REV-4: SH2 on-chip divider (32 / 32 signed).  Write the divisor, write the dividend (starts the
++   division, 39 cycles), read the quotient (the read waits until it is ready).  Same use as D32XR
++   (r_main.c, r_phase2.c).  Not used in interrupt handlers - only drawPolyY. */
++#define SH2_DIVU_DVSR       (*(volatile long *)0xFFFFFF00)
++#define SH2_DIVU_DVDNT      (*(volatile long *)0xFFFFFF04)
+ 
+ #endif
+diff --git a/src/platform/32x/Makefile b/src/platform/32x/Makefile
+index bbc4d90..d866b85 100644
+--- a/src/platform/32x/Makefile
++++ b/src/platform/32x/Makefile
+@@ -28,6 +28,21 @@ LIBPATH = -L$(ROOTDIR)/sh-elf/lib -L$(ROOTDIR)/sh-elf/lib/gcc/sh-elf/$(CC_VER) -
+ INCPATH = -I. -I../../fixed -I$(ROOTDIR)/sh-elf/include -I$(ROOTDIR)/sh-elf/sh-elf/include
+ 
+ SHCCFLAGS = -D__32X__ -m2 -mb -O2 -Wall -Wno-class-memaccess -g -c -fno-rtti -fno-exceptions -fomit-frame-pointer -fshort-enums -frandom-seed=0
++
++# CD32X build (Sega CD + 32X + RAM cart): make CD32X=1  (rm -rf build first)
++# PROFILER: make CD32X=1 PROF=1
++ifdef PROF
++SHCCFLAGS += -DCD32X_PROF
++endif
++
++ifdef CD32X
++SHCCFLAGS += -DCD32X
++# OL-2: asm/*.s go through the C preprocessor with INCPATH only - so the define goes there
++# too (asm/data.s leaves the levels out of the ROM in the CD32X build)
++CPPDEFS += -DCD32X
++endif
++# REV: extra switches, e.g. make CD32X=1 EXTRA="-DCD32X_NO_FILL" (see 32x.h REV-1..4)
++SHCCFLAGS += $(EXTRA)
+ SHLDFLAGS = -T $(LDSCRIPTSDIR)/mars.ld -Wl,-Map=$(BUILD)/output.map -nostdlib
+ SHASFLAGS = --big
+ 
+@@ -75,7 +90,7 @@ $(BUILD)/%.o: %.s
+ 	$(SHAS) $(SHASFLAGS) $(INCPATH) -o $@ $<
+ 
+ $(BUILD)/%.o: asm/%.s
+-	$(SHPP) $(INCPATH) -o $(BUILD)/$(notdir $<) $<
++	$(SHPP) $(INCPATH) $(CPPDEFS) -o $(BUILD)/$(notdir $<) $<
+ 	$(SHAS) $(SHASFLAGS) $(INCPATH) -o $@ $(BUILD)/$(notdir $<)
+ 
+ $(BUILD)/%.o: %.c
+diff --git a/src/platform/32x/asm/data.s b/src/platform/32x/asm/data.s
+index dcd12ee..0306ed8 100644
+--- a/src/platform/32x/asm/data.s
++++ b/src/platform/32x/asm/data.s
+@@ -1,12 +1,7 @@
+         .text
+-/*
+-        .global _TITLE_PKD
+-        .align  4
+-_TITLE_PKD:
+-        .long TITLE
+-TITLE:
+-        .incbin "data/TITLE.PKD"
+-*/
++#ifndef CD32X
++/* cartridge build: the levels are part of the ROM.
++   CD32X build: no levels here - osLoadLevel() loads them from the CD into the cart. */
+         .global _LEVEL1_PKD
+         .align  4
+ _LEVEL1_PKD:
+@@ -15,3 +10,21 @@ LEVEL1:
+         .incbin "data/LEVEL1.PKD"
+ 
+         .align  4
++
++        .global _LEVEL2_PKD
++        .align  4
++_LEVEL2_PKD:
++        .long LEVEL2
++LEVEL2:
++        .incbin "data/LEVEL2.PKD"
++#else
++/* OL-3: the loading screen (tools/make_ol_splash.py -> data/SPLASH.BIN) */
++        .global _SPLASH_BIN
++        .align  4
++_SPLASH_BIN:
++        .long SPLASH
++        .align  4
++SPLASH:
++        .incbin "data/SPLASH.BIN"
++#endif
++        .align  4
+diff --git a/src/platform/32x/fmv.inc b/src/platform/32x/fmv.inc
+new file mode 100644
+index 0000000..390bc66
+--- /dev/null
++++ b/src/platform/32x/fmv.inc
+@@ -0,0 +1,411 @@
++/* ---------------------------------------------------------------------------------------
++ * FMV-1: the original game's movies (RoQ video + DPCM sound), played from the passport.
++ *   Included by main.cpp (CD32X build only).  The movies were converted from the PC game's
++ *   .RPL files with ffmpeg (tools: see README): 288 x 112, 15 frames/s, 22050 Hz mono.
++ *
++ *   1. The .ROQ file is loaded from the CD into the cart's level slot (2 MB), exactly like a
++ *      level (CMD 38 file 300 + movie, CMD 46 chunks, splash + red bar).  Only files up to
++ *      0x1F0000 bytes fit before the save area - bigger ones are refused (FMV-2: streaming).
++ *      The level slot then holds the movie, so the next level load reads its level again.
++ *   2. The MASTER decodes the pictures straight from the cart with the RoQ decoder of
++ *      Victor Luchits' Doom 32X: Resurrection (roq_read.c, MIT; decoder by Tim Ferguson).
++ *      It draws in the 32X's 32768-colour mode, straight into the frame buffer; the previous
++ *      picture is kept in SDRAM (canvascopy, 68 KB) - borrowed from the 3D renderer's
++ *      vertex and face lists (renderScratch, render.cpp - FMV-1b), which are not used
++ *      while a movie plays.  Every line is shown twice (288 x 224 on screen).
++ *   3. The SLAVE plays the sound: it walks the same file in the cart, decodes the sound
++ *      chunks (DPCM) into 316-sample blocks and feeds them to the 32X PWM with its DMA
++ *      channel 1, paced by the PWM's own requests (DREQ).  The slave runs with interrupts
++ *      masked, so it polls the end of each block (TE) instead of a DMA interrupt.
++ *      The PWM is turned on (ramped to the middle) while the movie loads - no click.
++ *   4. A, B, C or START (after the first few frames) stops the movie.  Afterwards: 256-colour
++ *      mode, the game's line tables, palette and music come back.
++ * --------------------------------------------------------------------------------------- */
++#include "roq.h"
++
++#define FMV_FILE_BASE       300                 /* subcpu/main.c: 300 + movie -> slot 16 */
++#define FMV_MAX_LEN         0x1F0000            /* the level slot, up to the save area   */
++#define MARS_CMD_FMV_AUDIO  0x7A5C              /* slave command: play the movie's sound */
++#define MARS_CMD_FMV_PWM    0x7A5D              /* slave command: PWM on, slowly to the middle */
++#define FMV_CENTER          (2 + (32768 >> 6))  /* PWM value of silence */
++#define FMV_VOLUME          7                   /* FMV-1d: 16 = full, 8 = half (-6 dB); 7 tested on hardware */
++#define FMV_PWM(v)          (FMV_CENTER + ((((v) - 32768) * FMV_VOLUME) >> 10))   /* 0..65535 -> PWM */
++#define FMV_SAMPLES         316                 /* one PWM block (about 70 per second)   */
++#define FMV_SHARED(v)       (*(volatile int32 *)((uint32)&(v) | 0x20000000))   /* cache-through */
++
++void sndForgetTrack();                          /* FMV-1: sound.cpp - restart the music     */
++void* renderScratch(int32* size);               /* FMV-1: render.cpp - the borrowed lists   */
++void renderScratchDone();                       /*        ... given back (ordering table 0) */
++
++static int32 gFmvLen = 0;                       /* the movie's length, for the slave        */
++static int32 gFmvStop = 0;                      /* master -> slave: stop the sound          */
++static uint16 gFmvSnd[2][FMV_SAMPLES] __attribute__((aligned(16)));
++
++/* ----------------------------------------------------------------------------- the slave */
++struct FmvAudio
++{
++    const uint8* p;                             /* next chunk header in the cart */
++    const uint8* end;
++    int32 rem;                                  /* samples left in the current sound chunk */
++    int32 val;                                  /* DPCM predictor 0..65535 */
++};
++
++static void fmvAudioFill(FmvAudio &a, uint16* dst)  /* one block of PWM samples */
++{
++    int32 i = 0;
++    while (i < FMV_SAMPLES)
++    {
++        if (a.rem <= 0)                         /* the next sound chunk */
++        {
++            while (a.p + 8 <= a.end)
++            {
++                const uint8* h = a.p;
++                uint32 id = h[0] | (h[1] << 8);
++                uint32 size = h[2] | (h[3] << 8) | (h[4] << 16) | ((uint32)h[5] << 24);
++                if (size > (uint32)(a.end - h - 8))
++                {
++                    a.p = a.end;                /* broken chunk: the end */
++                    break;
++                }
++                a.p = h + 8;
++                if (id == RoQ_SOUND_MONO)
++                {
++                    a.val = (int32)(int16)(h[6] | (h[7] << 8)) + 32768;
++                    a.rem = (int32)size;
++                    break;
++                }
++                a.p += size;                    /* a picture chunk: not ours */
++            }
++            if (a.rem <= 0)                     /* no sound left: hold the last value */
++            {
++                uint16 last = (uint16)FMV_PWM(a.val);
++                for (; i < FMV_SAMPLES; i++)
++                    dst[i] = last;
++                return;
++            }
++        }
++
++        int32 n = a.rem;
++        if (n > FMV_SAMPLES - i)
++            n = FMV_SAMPLES - i;
++        const uint8* b = a.p;
++        int32 v = a.val;
++        for (int32 j = 0; j < n; j++)
++        {
++            int32 c = b[j];
++            int32 d = (c & 127) * (c & 127);    /* the RoQ DPCM step: the square, signed */
++            v += (c & 128) ? -d : d;
++            if (v > 65535) v = 65535;
++            else if (v < 0) v = 0;
++            dst[i + j] = (uint16)FMV_PWM(v);
++        }
++        a.val = v;
++        a.p = b + n;
++        a.rem -= n;
++        i += n;
++    }
++}
++
++static void fmvAudioStart(uint16* buf)          /* slave DMA 1 -> PWM mono, on PWM requests */
++{
++    SH2_DMA_CHCR1 = 0;
++    SH2_DMA_SAR1 = (uint32)buf;
++    SH2_DMA_DAR1 = (uint32)&MARS_PWM_MONO;
++    SH2_DMA_TCR1 = FMV_SAMPLES;
++    SH2_DMA_CHCR1 = 0x14e1;                     /* dest fixed, src +, word, DREQ, no interrupt */
++}
++
++static void fmvPwmRamp(int32 from, int32 to, int32 each)   /* slave: no click on a real 32X */
++{
++    int32 step = (from < to) ? 1 : -1;
++    for (int32 v = from; v != to; v += step)
++        for (int32 i = 0; i < each; i++)
++        {
++            while (MARS_PWM_MONO & 0x8000) {}   /* FIFO full: wait */
++            MARS_PWM_MONO = (uint16)v;
++        }
++}
++
++static void fmvPwmOn()                          /* slave: MARS_CMD_FMV_PWM, while the movie loads */
++{
++    if (MARS_VDP_DISPMODE & MARS_NTSC_FORMAT)
++        MARS_PWM_CYCLE = (((23011361 << 1) / RoQ_SAMPLE_RATE + 1) >> 1) + 1;
++    else
++        MARS_PWM_CYCLE = (((22801467 << 1) / RoQ_SAMPLE_RATE + 1) >> 1) + 1;
++    MARS_PWM_CTRL = 0x0185;                     /* L/R on, DREQ every PWM cycle (Vic's values) */
++    fmvPwmRamp(1, FMV_CENTER, 86);              /* about 2 s, like Vic's Mars_InitPWM */
++}
++
++static void fmvAudio()                          /* slave: MARS_CMD_FMV_AUDIO */
++{
++    CacheClear();                               /* the movie is new in the cart */
++
++    FmvAudio a;
++    a.p = (const uint8*)CD_LEVEL_CART + 8;      /* after the file header */
++    a.end = (const uint8*)CD_LEVEL_CART + FMV_SHARED(gFmvLen);
++    a.rem = 0;
++    a.val = 32768;
++
++    uint16* buf[2];
++    buf[0] = (uint16*)((uint32)gFmvSnd[0] | 0x20000000);   /* written cache-through */
++    buf[1] = (uint16*)((uint32)gFmvSnd[1] | 0x20000000);
++
++    fmvAudioFill(a, buf[0]);
++    fmvAudioFill(a, buf[1]);
++    fmvAudioStart(buf[0]);
++    int32 next = 1;
++
++    while (!FMV_SHARED(gFmvStop))
++    {
++        if (!(SH2_DMA_CHCR1 & 2))               /* TE: block not finished yet */
++        {
++            for (volatile int32 k = 0; k < 32; k++) {}   /* don't hammer the shared flag */
++            continue;
++        }
++        SH2_DMA_CHCR1;                          /* TE read, then cleared by the next start */
++        fmvAudioStart(buf[next]);
++        next ^= 1;
++        fmvAudioFill(a, buf[next]);
++    }
++
++    SH2_DMA_CHCR1 = 0;                          /* stop, then slowly down to 0 (no click) */
++    int32 last = FMV_PWM(a.val);
++    if (last > FMV_CENTER * 2) last = FMV_CENTER * 2;
++    fmvPwmRamp(last, 1, 4);
++}
++
++/* ---------------------------------------------------------------------------- the master */
++static const uint8* gFmvPos;                    /* the next chunk in the cart */
++static const uint8* gFmvEnd;
++
++static void fmvGetChunk(roq_file* fp)           /* the decoder's next picture chunk */
++{
++    if (fp->bof)                                /* the 8-byte file header */
++    {
++        fp->data = (unsigned char*)gFmvPos;
++        fp->page_base = fp->data;
++        fp->page_end = fp->data + 8;
++        return;
++    }
++    while (gFmvPos + 8 <= gFmvEnd)
++    {
++        const uint8* h = gFmvPos;
++        uint32 id = h[0] | (h[1] << 8);
++        uint32 size = h[2] | (h[3] << 8) | (h[4] << 16) | ((uint32)h[5] << 24);
++        if (size > (uint32)(gFmvEnd - h - 8))
++            break;
++        if (id == RoQ_SOUND_MONO || id == RoQ_SOUND_STEREO)
++        {
++            gFmvPos = h + 8 + size;             /* the slave plays these */
++            continue;
++        }
++        fp->data = (unsigned char*)h;
++        fp->page_base = fp->data;
++        fp->page_end = fp->data + 8 + size;
++        return;
++    }
++    fp->eof = 1;                                /* the end of the movie */
++    fp->data = NULL;
++}
++
++static void fmvRetChunk(roq_file* fp)
++{
++    if (!fp->data)
++        return;
++    gFmvPos = fp->page_end;
++    fp->bof = 0;
++}
++
++static void fmvFinish()                         /* the decoder may draw: last picture shown */
++{
++    pageWait();
++}
++
++static void fmvWaitVBlank()
++{
++    while (MARS_VDP_FBCTL & MARS_VDP_VBLK) {}
++    while (!(MARS_VDP_FBCTL & MARS_VDP_VBLK)) {}
++}
++
++static void fmvLines(int32 pitch, int32 height) /* both pages: line tables + black */
++{
++    for (int32 page = 0; page < 2; page++)
++    {
++        volatile uint16* lines = &MARS_FRAMEBUFFER;
++        fast_memset((void*)((uint8*)&MARS_FRAMEBUFFER + 0x200), 0, (0x20000 - 0x200) >> 2);
++        for (int32 j = 0; j < 256; j++)
++        {
++            if (pitch && j < height * 2)
++                lines[j] = (uint16)((j >> 1) * pitch + 0x100);  /* every line twice */
++            else if (pitch)
++                lines[j] = (uint16)(height * pitch + 0x100);    /* a black line */
++            else
++                lines[j] = (uint16)(0x100 + ((j < FRAME_HEIGHT - 1) ? j : FRAME_HEIGHT - 1) * (FRAME_WIDTH / 2));
++        }
++        pageFlip();
++        pageWait();
++    }
++}
++
++static int32 fmvPad()
++{
++    MARS_SYS_COMM2 = 0;                         /* no sound effect */
++    cdCmd(CD_CMD_GET_PAD);
++    return MARS_SYS_COMM8;
++}
++
++static void fmvFail(uint16 colour)              /* FMV-1c: why a movie didn't play - 1 s flash */
++{
++    for (int32 i = 0; i < 256; i++)
++    {
++        while ((MARS_VDP_FBCTL & MARS_VDP_PEN) == 0) {}
++        (&MARS_CRAM)[i] = colour;
++    }
++    int32 t = *(volatile int32*)&gFrameIndex;
++    while (*(volatile int32*)&gFrameIndex - t < 60) {}
++    if (gGamePalette)
++        osSetPalette(gGamePalette);
++}
++#define FMV_RED     0x001F                      /* no memory */
++#define FMV_YELLOW  0x03FF                      /* not on the disc / too big */
++#define FMV_BLUE    0x7C00                      /* loading failed */
++#define FMV_MAGENTA 0x7C1F                      /* not a RoQ movie */
++
++/* plays movie n (0 CORE, 1 MANSION, 2 CAFE, 3 SNOW, 4 LIFT, 5 VISION, 6 CANYON, 7 PYRAMID,
++   8 PRISON, 9 ESCAPE, 10 END); false = not played (not on the disc / too big / no memory) */
++bool osPlayVideo(int32 n)
++{
++#ifdef CD32X_OVERLAP
++    renderFinish();                             /* the slave's last frame */
++#endif
++    MARS_WAIT();
++    pageWait();
++
++    /* memory first: nothing is loaded if the lists can't be borrowed */
++    int32 scratchSize = 0;
++    uint8* scratch = (uint8*)renderScratch(&scratchSize);
++    const int32 copyOfs = 3328;                 /* FMV-1b: ri 256 + codebooks 3072, then the copy */
++    if (!scratch || scratchSize < copyOfs + 304 * 112 * 2)
++    {
++        fmvFail(FMV_RED);
++        return false;
++    }
++
++    MARS_SYS_COMM2 = (uint16)(FMV_FILE_BASE + n);   /* the length, before anything moves */
++    cdCmd(CD_CMD_OPEN_FILE);
++    int32 len = (MARS_SYS_COMM0 == 0) ? (int32)CD_COMM8_32 : 0;
++    if (len <= 8 || len > FMV_MAX_LEN)
++    {
++        renderScratchDone();
++        fmvFail(FMV_YELLOW);
++        return false;
++    }
++
++    MARS_SYS_COMM2 = 0;                         /* music off - no CD data reads while it plays */
++    cdCmd(54);
++    sndForgetTrack();                           /* the engine restarts it afterwards */
++
++    splashBegin();
++    MARS_SYS_COMM4 = MARS_CMD_FMV_PWM;          /* the slave turns the PWM on meanwhile */
++    gCartLevel = -1;                            /* the level slot is the movie's now */
++    int32 res = cdLoadToCart((uint16)(FMV_FILE_BASE + n));
++    CacheClear();
++    MARS_WAIT();                                /* PWM ramp done */
++    MARS_SYS_COMM4 = MARS_CMD_CACHE;            /* slave: forget the old cart data too */
++    MARS_WAIT();
++    if (res <= 8)
++    {
++        splashEnd();
++        renderScratchDone();
++        fmvFail(FMV_BLUE);
++        return false;
++    }
++
++    /* the decoder's memory, in the borrowed lists */
++    memset(scratch, 0, copyOfs);
++    roq_info* ri = (roq_info*)scratch;
++    ri->cells_u = (roq_cell*)(scratch + 256);   /* 256 x 8 */
++    ri->qcells_u = (roq_qcell*)(scratch + 256 + 2048);   /* 256 x 4 */
++    ri->canvascopy = (short*)(scratch + copyOfs);
++
++    roq_file fp;
++    memset(&fp, 0, sizeof(fp));
++    fp.bof = 1;
++    gFmvPos = (const uint8*)CD_LEVEL_CART;
++    gFmvEnd = gFmvPos + res;
++
++    int32 displayRate = (MARS_VDP_DISPMODE & MARS_NTSC_FORMAT) ? 60 : 50;
++    roq_init(ri, &fp, fmvGetChunk, fmvRetChunk, displayRate, (short*)((uint8*)&MARS_FRAMEBUFFER + 0x200));
++
++    bool ok = (roq_read_info(&fp, ri) == 0) && ri->framerate > 0 && ri->width <= 304 &&
++              ri->canvas_pitch * ri->display_height * 2 <= scratchSize - copyOfs &&
++              ri->display_height * 2 <= FRAME_HEIGHT;
++    if (!ok)
++    {
++        splashEnd();
++        renderScratchDone();
++        fmvFail(FMV_MAGENTA);
++        return false;
++    }
++
++    /* 32768 colours, every line twice */
++    fmvWaitVBlank();
++    MARS_VDP_DISPMODE = MARS_224_LINES | MARS_VDP_MODE_OFF;
++    fmvLines(ri->canvas_pitch, ri->display_height);
++    fmvWaitVBlank();
++    MARS_VDP_DISPMODE = MARS_224_LINES | MARS_VDP_MODE_32K;
++
++    SH2_DMA_CHCR1 = 0;                          /* master DMA 1: the picture copy (decoder) */
++    SH2_DMA_DRCR1 = 0;
++    SH2_DMA_DMAOR = 1;
++
++    FMV_SHARED(gFmvLen) = res;
++    FMV_SHARED(gFmvStop) = 0;
++    bool audio = false;
++
++    int32 start = gFrameIndex;
++    int32 frames = 0;
++    int32 prev = 0xFFFF;                        /* buttons held when the movie starts don't count */
++    while (1)
++    {
++        int32 pad = fmvPad();
++        int32 hit = pad & ~prev;
++        prev = pad;
++        if (frames > 5 && (hit & (SEGA_CTRL_A | SEGA_CTRL_B | SEGA_CTRL_C | SEGA_CTRL_START)))
++            break;
++
++        CacheClear();                           /* the copy was written by DMA */
++        if (roq_read_frame(ri, 0, fmvFinish) <= 0)
++            break;
++        pageFlip();                             /* shown at the next vertical blank */
++
++        if (!audio)                             /* the sound starts with the first picture */
++        {
++            MARS_SYS_COMM4 = MARS_CMD_FMV_AUDIO;
++            audio = true;
++            start = *(volatile int32*)&gFrameIndex;
++        }
++
++        frames++;
++        int32 due = start + (frames * displayRate) / (int32)ri->framerate;
++        while (*(volatile int32*)&gFrameIndex - due < 0) {}
++    }
++
++    /* the end: sound off, the game's screen back */
++    FMV_SHARED(gFmvStop) = 1;
++    MARS_WAIT();
++    pageWait();
++    SH2_DMA_CHCR1 = 0;
++
++    fmvWaitVBlank();
++    MARS_VDP_DISPMODE = MARS_224_LINES | MARS_VDP_MODE_OFF;
++    fmvLines(0, 0);                             /* the game's line tables, black */
++    if (gGamePalette)
++        osSetPalette(gGamePalette);
++    fmvWaitVBlank();
++    MARS_VDP_DISPMODE = MARS_224_LINES | MARS_VDP_MODE_256;
++
++    renderScratchDone();
++    CacheClear();
++    return true;
++}
+diff --git a/src/platform/32x/main.cpp b/src/platform/32x/main.cpp
+index 42f1f7e..b1d44af 100644
+--- a/src/platform/32x/main.cpp
++++ b/src/platform/32x/main.cpp
+@@ -1,10 +1,212 @@
+ const void* TRACKS_IMA;
+ const void* TITLE_SCR;
+ 
++#ifndef CD32X
+ extern void* LEVEL1_PKD;
++extern void* LEVEL2_PKD;
++#endif
+ 
+ #include "game.h"
+ 
++#ifdef CD32X
++/* ---------------------------------------------------------------------------------------
++ * CD32X build (Sega CD + 32X + 4 MB RAM cart).
++ * The Genesis side does NOT run OpenLara's own 68000 code (src-md).  The 68000 stays in the
++ * CD32X listener (hw_md.s) and the Sub-CPU service loop (Demo/main.c) answers requests the
++ * master SH2 writes to COMM0, exactly like Kobo and the D32XR loader:
++ *   SH2 writes COMM0 = command, the Sub-CPU replies and clears COMM0 when done.
++ * --------------------------------------------------------------------------------------- */
++#define CD_CMD_GET_PAD      48      /* reply: pad 1 bits (SEGA_CTRL_*) in COMM8 */
++#define CD_CMD_TEXT_ONOFF   52      /* COMM2 = 1 on / 0 off - Genesis display */
++#define CD_CMD_SFX_LOAD     53      /* OL-6: COMM2 = level -> SFX<level>.BIN into the PCM chip */
++int32 sndTakePending();             /* OL-6: sound.cpp - this frame's sound effect (0 = none) */
++int32 sndPendingVolume();           /* SFXVOL-1: sound.cpp - its volume 1-64 (0 = none) */
++
++static void cdPause()               /* hardware rule: never hammer a COMM register */
++{
++    for (volatile int32 k = 0; k < 64; k++) {}
++}
++
++static void cdCmd(uint16 cmd)
++{
++    MARS_SYS_COMM0 = cmd;
++    for (int32 n = 0; n < 2000000 && MARS_SYS_COMM0 != 0; n++)
++        cdPause();
++}
++
++/* ---------------------------------------------------------------------------------------
++ * OL-2b: levels are loaded from the CD into the RAM cart (cart offset 2 MB = slot 16).
++ *   CMD 38 with COMM2 = 100 + LevelID opens "<level>.PKD" (subcpu/main.c maps the names),
++ *   then CMD 46 per 32 KB chunk: the Sub-CPU reads the sectors and the 68000 copies them
++ *   into the cart, with RV = 1 for the copy.
++ * NO PARKING, NO SDRAM CODE: while RV = 1 an SH2 access to the cart is simply HELD until the
++ *   68000 clears RV again (D32XR/SRB32X rely on this: their 68000 sets RV for VDP DMA and
++ *   SRAM saves while both SH2s run from the cartridge).  So both SH2s stay in their normal
++ *   code; they just pause for the few milliseconds of each copy.
++ * After the load both SH2s clear their caches (the old level may still be cached).
++ * Status codes in COMM12 (the Sub-CPU shows them as STATE: when the green text is on):
++ *   4Fxx loading level xx   4E8n chunk n done   4E14 level ready   4B10 game loop running
++ *   4EE1 file not on the disc   4EE2 bad chunk(s)   4EE3/4EE4 the Sub-CPU did not answer
++ * --------------------------------------------------------------------------------------- */
++#define CD_CMD_OPEN_FILE      38
++#define CD_CMD_CHUNK_TO_CART  46
++#define CD_FILE_LEVEL_BASE    100           /* subcpu/main.c: 100 + LevelID -> .PKD, slot 16 */
++#define CD_LEVEL_CART         0x02200000    /* cart offset 0x200000 as the SH2 sees it      */
++#define MARS_CMD_CACHE        0x7A5B        /* slave command: clear your cache              */
++#define CD_STATE(code)        (*(volatile uint16 *)0x2000402C = (uint16)(code))   /* COMM12 */
++#define CD_COMM8_32           (*(volatile uint32 *)0x20004028)
++#define CD_COMM12_16          (*(volatile uint16 *)0x2000402C)
++#define CD32X_TEXT            0             /* OL-3: no green/white text - splash screen instead */
++
++/* ---------------------------------------------------------------------------------------
++ * OL-3: loading screen.  SPLASH.BIN (tools/make_ol_splash.py, built into the ROM by asm/data.s):
++ *   256 palette entries (32X BGR555, big-endian), then 320 x 180 pixels, one byte each.
++ *   Indices 0-251 = the picture, 252 black, 253 bar background, 254 bar (red), 255 bar edge.
++ * Both frame buffers get the picture; the red bar along the bottom grows after every chunk.
++ * All frame-buffer writes are 16-bit (KOBO doc, rule 4).
++ * --------------------------------------------------------------------------------------- */
++extern void* SPLASH_BIN;                           /* asm/data.s */
++#define SPL_W       320
++#define SPL_H       180
++#define SPL_TOP     14
++#define BAR_X0      14                             /* outer edge, even */
++#define BAR_X1      306                            /* outer edge, exclusive, even */
++#define BAR_Y0      198
++#define BAR_Y1      214
++#define C_BLACK     252
++#define C_BARBG     253
++#define C_BAR       254
++#define C_EDGE      255
++
++void osSetPalette(const uint16* palette);
++void pageWait();
++void pageFlip();
++void pageClear();
++static const uint16* gGamePalette = 0;             /* OL-3: the game palette, restored after a load */
++
++static uint8 splashBarColor(int32 x, int32 y, int32 fill)
++{
++    if (y < BAR_Y0 + 2 || y >= BAR_Y1 - 2 || x < BAR_X0 + 2 || x >= BAR_X1 - 2)
++        return C_EDGE;
++    return (x - (BAR_X0 + 2) < fill) ? C_BAR : C_BARBG;
++}
++
++static void splashBar(int32 done, int32 total)
++{
++    int32 inner = (BAR_X1 - 2) - (BAR_X0 + 2);
++    int32 fill = (total > 0) ? (inner * done) / total : 0;
++    volatile uint16* fb = (volatile uint16*)&MARS_FRAMEBUFFER + 0x100;
++    for (int32 y = BAR_Y0; y < BAR_Y1; y++)
++    {
++        volatile uint16* row = fb + y * (FRAME_WIDTH / 2);
++        for (int32 x = BAR_X0; x < BAR_X1; x += 2)
++            row[x >> 1] = (uint16)((splashBarColor(x, y, fill) << 8) | splashBarColor(x + 1, y, fill));
++    }
++}
++
++static void splashPage(int32 done, int32 total)
++{
++    volatile uint16* fb = (volatile uint16*)&MARS_FRAMEBUFFER + 0x100;
++    const uint16* pix = (const uint16*)((const uint8*)SPLASH_BIN + 512);
++    const uint16 black = (C_BLACK << 8) | C_BLACK;
++    for (int32 y = 0; y < FRAME_HEIGHT; y++)
++    {
++        volatile uint16* row = fb + y * (FRAME_WIDTH / 2);
++        if (y >= SPL_TOP && y < SPL_TOP + SPL_H)
++        {
++            const uint16* src = pix + (y - SPL_TOP) * (SPL_W / 2);
++            for (int32 x = 0; x < FRAME_WIDTH / 2; x++)
++                row[x] = src[x];
++        }
++        else
++        {
++            for (int32 x = 0; x < FRAME_WIDTH / 2; x++)
++                row[x] = black;
++        }
++    }
++    splashBar(done, total);
++}
++
++static void splashBegin()
++{
++    const uint16* gamePal = gGamePalette;
++    osSetPalette((const uint16*)SPLASH_BIN);       /* the picture's own colours */
++    gGamePalette = gamePal;                        /* ...but remember the game's */
++    for (int32 i = 0; i < 2; i++)                  /* the same picture in both buffers */
++    {
++        pageWait();
++        splashPage(0, 1);
++        pageFlip();
++    }
++    pageWait();
++}
++
++static void splashProgress(int32 done, int32 total)
++{
++    for (int32 i = 0; i < 2; i++)                  /* bar in both buffers, shown at once */
++    {
++        splashBar(done, total);
++        pageFlip();
++        pageWait();
++    }
++}
++
++static void splashEnd()
++{
++    for (int32 i = 0; i < 2; i++)                  /* nothing of the picture left behind */
++    {
++        pageClear();
++        pageFlip();
++        pageWait();
++    }
++    if (gGamePalette)
++        osSetPalette(gGamePalette);
++}
++
++/* returns the file length, -1 not on the disc, -2 bad chunk(s), -3/-4 no answer */
++static int32 cdLoadToCart(uint16 file)
++{
++    MARS_SYS_COMM2 = file;
++    cdCmd(CD_CMD_OPEN_FILE);
++    if (MARS_SYS_COMM0 != 0)
++        return -3;
++    int32 len = (int32)CD_COMM8_32;                 /* CMD 46 reads it back from COMM8 */
++    if (len <= 0)
++        return -1;
++
++    int32 bad = 0;
++    uint32 chunks = ((uint32)len + 32767) >> 15;
++    for (uint32 c = 0; c < chunks; c++)
++    {
++        MARS_SYS_COMM2 = (uint16)(c | 0x8000);     /* OL-13: no read-back (faster) */
++        CD_COMM12_16 = 0;                           /* the Sub-CPU replies 0 = done */
++        cdCmd(CD_CMD_CHUNK_TO_CART);
++        if (MARS_SYS_COMM0 != 0)
++            return -4;
++        if (CD_COMM12_16 != 0)
++            bad++;
++        CD_STATE(0x4E80 | (c & 0x7F));              /* progress */
++        splashProgress((int32)c + 1, (int32)chunks);   /* OL-3: the red bar grows */
++    }
++    return bad ? -2 : len;
++}
++
++static void cdLoadFailed()                  /* red screen = a level could not be loaded */
++{
++    for (int32 i = 0; i < 256; i++)
++    {
++        while ((MARS_VDP_FBCTL & MARS_VDP_PEN) == 0);  /* palette writable only in blanking */
++        (&MARS_CRAM)[i] = 0x001F;
++    }
++    while (1) {}
++}
++#endif
++
++#if defined(CD32X) && !defined(CD32X_NO_SPLIT) && !defined(CD32X_NO_OVERLAP)
++    #define CD32X_OVERLAP   // OVERLAP-1 (render.cpp): game logic runs while the slave draws
++void renderFinish();        // render.cpp: wait for the slave's rows, clear the ordering table
++#endif
++
+ volatile unsigned mars_frt_ovf_count = 0;
+ 
+ extern "C" {
+@@ -24,8 +226,142 @@ int32 gFrameIndex = 0;
+ int32 g_timer;
+ int32 fps;
+ 
++#ifdef CD32X_PROF
++/* ---------------------------------------------------------------------------------------
++ * PROFILER (build with:  PROF=1 bash build.sh).  Averages over one second, drawn top-left:
++ *   F fps          T frame ms (whole frame, both SH2s' view of the master)
++ *   I input ms     L logic ms       W wait for the screen (page) ms
++ *   X prepare ms (transform + sort)   D draw ms (master drawing incl. S)   S sync wait ms
++ *   B slave busy % (share of the frame the slave SH2 spends drawing)
++ * PROF-2: time = the master's watchdog timer, clock / 4096 = 178 us per tick (the FRT that
++ * PROF-1 used is reset by crt0.s on every compare match - it never counted).  B dropped.
++ * --------------------------------------------------------------------------------------- */
++volatile uint32 gProfDraw = 0;          /* master: flush_c (render.cpp)           */
++volatile uint32 gProfSync = 0;          /* master: waiting for the slave in flush  */
++volatile uint32 gProfSlave = 0;         /* slave: its share of the drawing (cache-through) */
++static uint32 profAcc[5];               /* I, L, W, R(render), T(frame) */
++static uint32 profFrames = 0;
++static int32  profShow[10];             /* F T I L W X D S B */
++static uint32 profFrameStart;
++static uint8  profFg = 255, profBg = 0;
++
++uint32 profNow()                        /* master only: watchdog ticks, 178 us each */
++{
++    uint32 o1, o2;
++    uint8 c;
++    do {                                /* the overflow count must not change in between */
++        o1 = mars_pwdt_ovf_count;
++        c = SH2_WDT_RTCNT;
++        o2 = mars_pwdt_ovf_count;
++    } while (o1 != o2);
++    return (o1 << 8) | c;
++}
++
++void profInitTimer()
++{
++                                        /* PROF-2: nothing - never touch the FRT */
++}
++
++#define PROF_SLAVE  (*(volatile uint32 *)((uint32)&gProfSlave | 0x20000000))
++#define PROF_MS(t)  (int32)((((t) * 178) / (profFrames ? profFrames : 1)) / 1000)
++
++static void profPublish()
++{
++    uint32 slave = PROF_SLAVE;
++    profShow[0] = fps;
++    profShow[1] = PROF_MS(profAcc[4]);
++    profShow[2] = PROF_MS(profAcc[0]);
++    profShow[3] = PROF_MS(profAcc[1]);
++    profShow[4] = PROF_MS(profAcc[2]);
++    profShow[5] = PROF_MS(profAcc[3] > gProfDraw ? profAcc[3] - gProfDraw : 0);
++    profShow[6] = PROF_MS(gProfDraw);
++    profShow[7] = PROF_MS(gProfSync);
++    profShow[8] = profAcc[4] ? (int32)((slave * 100) / profAcc[4]) : 0;
++    for (int32 i = 0; i < 5; i++) profAcc[i] = 0;
++    gProfDraw = gProfSync = 0;
++    PROF_SLAVE = 0;
++    profFrames = 0;
++
++    /* text colours: the brightest and the darkest colour of the current palette */
++    int32 hi = -1, lo = 1 << 30;
++    for (int32 i = 1; i < 256; i++) {
++        uint16 c = (&MARS_CRAM)[i];
++        int32 l = (c & 31) * 3 + ((c >> 5) & 31) * 6 + ((c >> 10) & 31);
++        if (l > hi) { hi = l; profFg = (uint8)i; }
++        if (l < lo) { lo = l; profBg = (uint8)i; }
++    }
++}
++
++/* 3 x 5 font: 0-9 then F T I L W X D S B % space, each row 3 bits */
++static const uint8 profFont[][5] = {
++    {7,5,5,5,7},{2,6,2,2,7},{7,1,7,4,7},{7,1,7,1,7},{5,5,7,1,1},{7,4,7,1,7},{7,4,7,5,7},{7,1,1,1,1},
++    {7,5,7,5,7},{7,5,7,1,7},
++    {7,4,6,4,4},{7,2,2,2,2},{7,2,2,2,7},{4,4,4,4,7},{5,5,5,7,5},{5,5,2,5,5},{6,5,5,5,6},{7,4,7,1,7},
++    {6,5,6,5,6},{5,1,2,4,5},{0,0,0,0,0}
++};
++
++static int32 profGlyph(char ch)
++{
++    if (ch >= '0' && ch <= '9') return ch - '0';
++    switch (ch) {
++        case 'F': return 10; case 'T': return 11; case 'I': return 12; case 'L': return 13;
++        case 'W': return 14; case 'X': return 15; case 'D': return 16; case 'S': return 17;
++        case 'B': return 18; case '%': return 19;
++    }
++    return 20;
++}
++
++static void profText(int32 x, int32 y, const char* s)       /* 2x scaled, x even */
++{
++    volatile uint16* fb = (volatile uint16*)&MARS_FRAMEBUFFER + 0x100;
++    uint16 fg = (uint16)((profFg << 8) | profFg), bg = (uint16)((profBg << 8) | profBg);
++    for (; *s; s++, x += 8)
++    {
++        const uint8* g = profFont[profGlyph(*s)];
++        for (int32 r = 0; r < 12; r++)
++        {
++            volatile uint16* row = fb + (y + r) * (FRAME_WIDTH / 2) + (x >> 1);
++            for (int32 c = 0; c < 4; c++)
++            {
++                bool on = (r >= 1 && r <= 10 && c < 3) && ((g[(r - 1) >> 1] >> (2 - c)) & 1);
++                row[c] = on ? fg : bg;
++            }
++        }
++    }
++}
++
++static char* profNum(char* p, char tag, int32 v)
++{
++    *p++ = tag; *p++ = ' ';
++    if (v < 0) v = 0;
++    if (v > 999) v = 999;
++    if (v >= 100) *p++ = '0' + v / 100;
++    if (v >= 10)  *p++ = '0' + (v / 10) % 10;
++    *p++ = '0' + v % 10;
++    *p++ = ' '; *p++ = ' ';
++    return p;
++}
++
++static void profDraw()
++{
++    char line[48], *p;
++    p = profNum(line, 'F', profShow[0]); p = profNum(p, 'T', profShow[1]); *p = 0;
++    profText(4, 4, line);
++    p = profNum(line, 'I', profShow[2]); p = profNum(p, 'L', profShow[3]); p = profNum(p, 'W', profShow[4]); *p = 0;
++    profText(4, 18, line);
++    p = profNum(line, 'X', profShow[5]); p = profNum(p, 'D', profShow[6]); p = profNum(p, 'S', profShow[7]); *p = 0;
++    profText(4, 32, line);
++    /* PROF-2: no B line */
++}
++
++void profDrawFrame() { profDraw(); }    /* OVERLAP-1: flush_c draws the numbers before showing */
++#endif
++
+ void osSetPalette(const uint16* palette)
+ {
++#ifdef CD32X
++    gGamePalette = palette;
++#endif
+     void *dst = (void*)&MARS_CRAM;
+     memcpy(dst, palette, 256 * 2);
+ }
+@@ -35,6 +371,158 @@ int32 osGetSystemTimeMS()
+     return int32((mars_pwdt_ovf_count << 8) | SH2_WDT_RTCNT);
+ }
+ 
++#ifdef CD32X
++/* ---------------------------------------------------------------------------------------
++ * OL-8: settings + saved game in the RAM CART (battery-backed, MicroNut99 4 MB cart), in its
++ *   last 64 KB (cart offset 0x3F0000) - the loader and the levels never reach that far.
++ *   Why not the Sega CD backup RAM: it holds only 8 KB in total, too small for the saves of
++ *   the bigger levels, and every word had to travel through the Sub-CPU.  The SH2 writes the
++ *   cart directly, 16 bits at a time, cache-through, and reads every word back to check it.
++ *   0x3F0000  'OLST' + settings size + settings        0x3F0400  'OLGM' + size + SaveGame + data
++ * --------------------------------------------------------------------------------------- */
++#define CS_BASE         0x22000000          /* cart, cache-through, as the SH2 sees it */
++#define CS_SET          0x3F0000
++#define CS_GAME         0x3F0400
++#define CS_GAME_MAX     0xF000
++#define CS_EVEN(x)      (((x) + 1) & ~1)
++
++
++static void cartRead(uint32 ofs, uint8* dst, int32 len)               /* ofs even */
++{
++    volatile uint16* s = (volatile uint16*)(CS_BASE + ofs);
++    for (int32 i = 0; i < len; i += 2)
++    {
++        uint16 w = s[i >> 1];
++        dst[i] = (uint8)(w >> 8);
++        if (i + 1 < len) dst[i + 1] = (uint8)w;
++    }
++}
++
++/* OL-9: the SH2 cannot write the cart.  Writes collect in one 4 KB piece of the save area;
++   a full piece goes to the Sub-CPU's buffer (CMD 58, word by word) and CMD 61 lets the 68000
++   copy it into the cart and check it.  Reads stay direct (cartRead). */
++#define CS_PIECE        4096
++#define CS_CMD_PUT      58
++#define CS_CMD_TO_CART  61
++static uint8 csBuf[CS_PIECE];
++static int32 csPiece = -1;
++static bool  csDirty = false;
++static bool  csOk = true;
++
++static void csFlushPiece()
++{
++    if (csPiece < 0 || !csDirty) return;
++    for (int32 w = 0; w < CS_PIECE / 2; w++)
++    {
++        MARS_SYS_COMM8 = (uint16)((csBuf[w * 2] << 8) | csBuf[w * 2 + 1]);
++        MARS_SYS_COMM2 = (uint16)w;
++        cdCmd(CS_CMD_PUT);
++    }
++    MARS_SYS_COMM2 = (uint16)csPiece;
++    CD_COMM12_16 = 0;
++    cdCmd(CS_CMD_TO_CART);
++    if (CD_COMM12_16 != 1) csOk = false;
++    csDirty = false;
++}
++
++static bool csEnd()                                  /* write what is left, report */
++{
++    csFlushPiece();
++    bool ok = csOk;
++    csOk = true;
++    return ok;
++}
++
++static void cartRead(uint32 ofs, uint8* dst, int32 len);
++
++static bool cartWrite(uint32 ofs, const uint8* src, int32 len)
++{
++    while (len > 0)
++    {
++        int32 piece = int32(ofs - CS_SET) >> 12;
++        uint32 base = CS_SET + uint32(piece) * CS_PIECE;
++        if (piece != csPiece)
++        {
++            csFlushPiece();
++            cartRead(base, csBuf, CS_PIECE);
++            csPiece = piece;
++        }
++        int32 o = int32(ofs - base);
++        int32 n = (len < CS_PIECE - o) ? len : (CS_PIECE - o);
++        memcpy(csBuf + o, src, n);
++        csDirty = true;
++        ofs += n; src += n; len -= n;
++    }
++    return true;
++}
++
++static uint32 cartRead32(uint32 ofs)
++{
++    volatile uint16* s = (volatile uint16*)(CS_BASE + ofs);
++    return ((uint32)s[0] << 16) | s[1];
++}
++
++static bool cartWrite32(uint32 ofs, uint32 v)
++{
++    uint8 b[4] = { uint8(v >> 24), uint8(v >> 16), uint8(v >> 8), uint8(v) };
++    return cartWrite(ofs, b, 4);
++}
++
++bool osSaveSettings()
++{
++    cartWrite32(CS_SET, 0);                                     /* invalid while writing */
++    if (!cartWrite32(CS_SET + 4, sizeof(gSettings))) return false;
++    if (!cartWrite(CS_SET + 8, (const uint8*)&gSettings, sizeof(gSettings))) return false;
++    cartWrite32(CS_SET, 0x4F4C5354);                            /* 'OLST' last */
++    return csEnd();                                             /* OL-9 */
++}
++
++bool osLoadSettings()
++{
++    if (cartRead32(CS_SET) != 0x4F4C5354 || cartRead32(CS_SET + 4) != sizeof(gSettings))
++        return false;
++    uint8 version;
++    cartRead(CS_SET + 8, &version, 1);
++    if (version != gSettings.version)
++        return false;
++    cartRead(CS_SET + 8, (uint8*)&gSettings, sizeof(gSettings));
++    return true;
++}
++
++bool osCheckSave()
++{
++    if (cartRead32(CS_GAME) != 0x4F4C474D) return false;        /* 'OLGM' */
++    uint32 size = cartRead32(CS_GAME + 4);
++    if (size < sizeof(gSaveGame) || size > CS_GAME_MAX) return false;
++    uint32 version;
++    cartRead(CS_GAME + 8, (uint8*)&version, sizeof(version));
++    return version == SAVEGAME_VER;
++}
++
++bool osSaveGame()
++{
++    uint32 hdr = CS_EVEN(sizeof(gSaveGame));
++    uint32 size = hdr + gSaveGame.dataSize;
++    if (size > CS_GAME_MAX) return false;
++    cartWrite32(CS_GAME, 0);                                    /* invalid while writing */
++    if (!cartWrite32(CS_GAME + 4, size)) return false;
++    if (!cartWrite(CS_GAME + 8, (const uint8*)&gSaveGame, sizeof(gSaveGame))) return false;
++    if (!cartWrite(CS_GAME + 8 + hdr, gSaveData, gSaveGame.dataSize)) return false;
++    cartWrite32(CS_GAME, 0x4F4C474D);                           /* 'OLGM' last */
++    return csEnd();                                             /* OL-9 */
++}
++
++bool osLoadGame()
++{
++    if (!osCheckSave()) return false;
++    SaveGame tmp;
++    cartRead(CS_GAME + 8, (uint8*)&tmp, sizeof(tmp));
++    if (int32(tmp.dataSize) > int32(sizeof(gSaveData))) return false;
++    gSaveGame = tmp;
++    cartRead(CS_GAME + 8 + CS_EVEN(sizeof(gSaveGame)), gSaveData, gSaveGame.dataSize);
++    return true;
++}
++#else
+ bool osSaveSettings()
+ {
+     return false;
+@@ -59,6 +547,7 @@ bool osLoadGame()
+ {
+     return false;
+ }
++#endif
+ 
+ void osJoyVibrate(int32 index, int32 L, int32 R)
+ {
+@@ -69,6 +558,10 @@ void updateInput()
+ {
+     keys = 0;
+ 
++#ifdef CD32X
++    MARS_SYS_COMM2 = (uint16)sndPendingVolume();   /* SFXVOL-1: volume, read with the command */
++    cdCmd((uint16)(CD_CMD_GET_PAD | (sndTakePending() << 8)));   /* pad -> COMM8, OL-6: + sound effect */
++#endif
+     uint16 mask = MARS_SYS_COMM8;
+     if (mask & SEGA_CTRL_UP)      keys |= IK_UP;
+     if (mask & SEGA_CTRL_RIGHT)   keys |= IK_RIGHT;
+@@ -89,16 +582,191 @@ const void* osLoadScreen(LevelID id)
+     return TITLE_SCR;
+ }
+ 
++#ifdef CD32X
++static int32 gCartLevel = -1;                      /* OL-2c: the level now in the cart */
++static int32 gGameLoop = 0;                        /* OL-2c: the game loop has started */
++
++/* ---------------------------------------------------------------------------------------
++ * CAVES-1: Caves (Level 1) is also the title menu, so it is needed at every start and every
++ *   return to the menu.  It now has its own place in the cart, 0.5 MB (cart 0x080000 - the
++ *   unused space between the game and the level slot at 2 MB), and stays there:
++ *   - it is loaded from the CD once; afterwards a record in the cart's save area says so:
++ *     0x3F0300  'OLCV', file length, checksum, ~checksum   (written LAST, after a full copy)
++ *   - the cart keeps its contents without power, so at the next start the game checks the
++ *     record: same length as Caves on this disc + the checksum of what is in the cart now
++ *     matches -> no loading at all.  Anything else (first start, wiped cart, half-finished
++ *     copy, a Caves of another size) -> loaded from the CD again.
++ *   - A + B + C held while the game starts: always reload Caves from the CD.
++ *   - The other levels still go to the level slot at 2 MB.  The level's sound effects are
++ *     loaded only when the level changes (gSfxLevel).
++ *   Limitation: a rebuilt Caves of exactly the same size passes the length check -> A+B+C.
++ * --------------------------------------------------------------------------------------- */
++#define CD_FILE_CAVES_BASE    200                  /* subcpu/main.c: 200 + LevelID -> cart 0x080000 */
++#define CD_CAVES_CART         0x02080000           /* cart 0x080000 as the SH2 sees it */
++#define CS_CAVES              0x3F0300             /* record: after the settings, before the save */
++#define CAVES_MARK            0x4F4C4356           /* 'OLCV' */
++
++static int32 gSfxLevel = -1;                       /* CAVES-1: whose sound effects are loaded */
++static bool  gCavesOk = false;                     /* CAVES-1: Caves checked/loaded this session */
++
++static void sfxLoad(int32 id)                      /* the level's sound effects, if not there */
++{
++    if (gSfxLevel == id)
++        return;
++    MARS_SYS_COMM2 = 0;                            /* music off - no CD reads while it plays */
++    cdCmd(54);
++    MARS_SYS_COMM2 = (uint16)id;                   /* OL-6 */
++    cdCmd(CD_CMD_SFX_LOAD);
++    gSfxLevel = id;
++}
++
++static uint32 cavesSum(int32 len)                  /* checksum of Caves as it is in the cart */
++{
++    const uint32* p = (const uint32*)CD_CAVES_CART;
++    uint32 s = CAVES_MARK;
++    int32 n = len >> 2;
++    for (int32 i = 0; i < n; i++)
++        s = ((s << 1) | (s >> 31)) + p[i];
++    const uint8* b = (const uint8*)CD_CAVES_CART + (n << 2);
++    for (int32 i = 0; i < (len & 3); i++)
++        s = ((s << 1) | (s >> 31)) + b[i];
++    return s;
++}
++
++static bool cavesInCart(int32 id)                  /* true = Caves in the cart is complete */
++{
++    MARS_SYS_COMM2 = (uint16)(CD_FILE_CAVES_BASE + id);
++    cdCmd(CD_CMD_OPEN_FILE);                       /* only looks the file up: its length */
++    if (MARS_SYS_COMM0 != 0)
++        return false;
++    int32 len = (int32)CD_COMM8_32;
++    if (len <= 0)
++        return false;
++
++    if (cartRead32(CS_CAVES) != CAVES_MARK || (int32)cartRead32(CS_CAVES + 4) != len)
++        return false;
++    uint32 sum = cartRead32(CS_CAVES + 8);
++    if (cartRead32(CS_CAVES + 12) != ~sum)
++        return false;
++
++    CacheClear();                                  /* read what is really in the cart */
++    bool ok = (cavesSum(len) == sum);
++    CacheClear();
++    return ok;
++}
++
++static bool cavesForced()                          /* A + B + C held: reload Caves */
++{
++    cdCmd(CD_CMD_GET_PAD);                         /* pad -> COMM8 (no sound effect) */
++    uint16 pad = MARS_SYS_COMM8;
++    uint16 abc = SEGA_CTRL_A | SEGA_CTRL_B | SEGA_CTRL_C;
++    return (pad & abc) == abc;
++}
++
++static const void* cavesLoad(LevelID id)
++{
++    MARS_WAIT();                                   /* slave idle */
++
++    if (!gCavesOk)
++    {
++        if (cavesForced() || !cavesInCart(id))
++        {
++            MARS_SYS_COMM2 = 0;                    /* music off - no CD data reads while */
++            cdCmd(54);                             /* it plays */
++            splashBegin();
++            CD_STATE(0x4F00 | id);
++            int32 res = cdLoadToCart((uint16)(CD_FILE_CAVES_BASE + id));
++            if (res < 0)
++            {
++                CD_STATE(0x4EE0 + (-res));
++                cdLoadFailed();
++            }
++
++            CacheClear();                          /* master: forget the old data */
++            MARS_SYS_COMM4 = MARS_CMD_CACHE;       /* slave: the same */
++            MARS_WAIT();
++
++            uint32 sum = cavesSum(res);            /* the record, marker written last */
++            cartWrite32(CS_CAVES, 0);
++            cartWrite32(CS_CAVES + 4, (uint32)res);
++            cartWrite32(CS_CAVES + 8, sum);
++            cartWrite32(CS_CAVES + 12, ~sum);
++            cartWrite32(CS_CAVES, CAVES_MARK);
++            csEnd();
++            CacheClear();
++
++            gSfxLevel = -1;                        /* load the sound effects below */
++            sfxLoad(id);
++            splashEnd();
++        }
++        gCavesOk = true;
++    }
++
++    sfxLoad(id);
++    CD_STATE(0x4E14);                              /* level ready */
++    return (const void*)CD_CAVES_CART;
++}
++
++const void* osLoadLevel(LevelID id)
++{
++    /* the title "level" has always been Level 1 on the 32X (TITLE.PKD was never used);
++       ids past Atlantis (Unfinished Business, ...) were not converted */
++    if (id == LVL_TR1_TITLE || id > LVL_TR1_10C)
++        id = LVL_TR1_1;
++
++    if (id == LVL_TR1_1)                           /* CAVES-1: its own place in the cart */
++        return cavesLoad(id);
++
++    MARS_WAIT();                                   /* slave idle (it just pauses during RV) */
++    if (id == gCartLevel)                          /* OL-2c: already there - no reload */
++    {
++        sfxLoad(id);                               /* CAVES-1: the menu may have changed them */
++        return (const void*)CD_LEVEL_CART;
++    }
++
++    MARS_SYS_COMM2 = 0;                            /* OL-4: music off - no CD data */
++    cdCmd(54);                                     /*       reads while it plays */
++    splashBegin();                                 /* OL-3: splash + progress bar */
++    CD_STATE(0x4F00 | id);
++    int32 res = cdLoadToCart((uint16)(CD_FILE_LEVEL_BASE + id));
++    if (res < 0)
++    {
++        CD_STATE(0x4EE0 + (-res));
++        cdLoadFailed();
++    }
++
++    CacheClear();                                  /* master: forget the old level */
++    MARS_SYS_COMM4 = MARS_CMD_CACHE;               /* slave: the same */
++    MARS_WAIT();
++    gSfxLevel = -1;                                /* CAVES-1: always for a new level */
++    sfxLoad(id);                                   /* OL-6: the level's sound effects */
++    CD_STATE(0x4E14);                              /* level ready */
++    gCartLevel = id;
++    splashEnd();                                   /* OL-3: screen cleared, game palette back */
++
++    return (const void*)CD_LEVEL_CART;
++}
++#else
+ const void* osLoadLevel(LevelID id)
+ {
+-    return (void*)LEVEL1_PKD; // TODO
++    switch (id)
++    {
++        case LVL_TR1_2: return (void*)LEVEL2_PKD;
++        default:        return (void*)LEVEL1_PKD;
++    }
+ }
++#endif
+ 
+ uint16 pageIndex = 0;
+ 
+ void pageWait()
+ {
++#ifdef CD32X_IDLE
++    while ((MARS_VDP_FBCTL & MARS_VDP_FS) != pageIndex)
++        marsIdle();                 /* REV-1: don't hold the bus the slave is drawing on */
++#else
+     while ((MARS_VDP_FBCTL & MARS_VDP_FS) != pageIndex);
++#endif
+ }
+ 
+ void pageFlip()
+@@ -107,10 +775,52 @@ void pageFlip()
+     MARS_VDP_FBCTL = pageIndex;
+ }
+ 
++#ifdef CD32X_FILL
++/* REV-2: clear the picture (words 0x100 ... 0x8CFF, the line table stays) with the VDP's auto
++ * fill instead of 17920 SH2 writes.  32X hardware manual, "FILL Function" + Sega's FrameClear:
++ *   FILLEN = length, FILADR = start word, writing FILDAT starts the fill; the address counts
++ *   only in its low 8 bits (one fill stays inside a 256-word page);
++ *   7 + 3 x length cycles; no SH2 frame-buffer access until FEN (FBCTL bit 1) reads 0.
++ * 320 x 224 bytes = 35840 words = exactly 140 pages from word 0x100.  Sega's FrameClear uses
++ * length 0xFF per page; the manual does not say clearly whether that is 255 or 256 words, so a
++ * second 1-word fill covers each page's last word (if it is length + 1, it writes the last word
++ * and the page's first word again - both inside the page, both meant to be 0).
++ * Returns only when the VDP is done, so every caller can draw at once, as before. */
++static void fillWait()
++{
++    __asm__ volatile ("nop\n\tnop\n\tnop\n\tnop");  /* FEN may need a moment to go to 1 (Sega: nop) */
++    while (MARS_VDP_FBCTL & MARS_VDP_FEN)
++    {
++        for (int k = 0; k < 8; k++)                     /* ~1.7 us, a page takes ~34 us */
++            __asm__ volatile ("nop");
++    }
++}
++
++void pageClear()
++{
++    fillWait();
++    for (uint32 a = 0x100; a < 0x100 + (FRAME_WIDTH * FRAME_HEIGHT) / 2; a += 0x100)
++    {
++        MARS_VDP_FILLEN = 0xFF;
++        MARS_VDP_FILADR = (uint16)a;
++        MARS_VDP_FILDAT = 0;
++        fillWait();
++        MARS_VDP_FILLEN = 1;
++        MARS_VDP_FILADR = (uint16)(a + 0xFF);
++        MARS_VDP_FILDAT = 0;
++        fillWait();
++    }
++}
++#else
+ void pageClear()
+ {
+     dmaFill((uint8*)&MARS_FRAMEBUFFER + 0x200, 0, FRAME_WIDTH * FRAME_HEIGHT);
+ }
++#endif
++
++#ifdef CD32X
++#include "fmv.inc"                  /* FMV-1: the movie player (osPlayVideo, fmvAudio) */
++#endif
+ 
+ extern "C" void pri_vbi_handler()
+ {
+@@ -140,16 +850,49 @@ extern "C" void secondary()
+     while (1)
+     {
+         int cmd;
++    #ifdef CD32X_IDLE
++        while ((cmd = MARS_SYS_COMM4) == 0)
++            marsIdle();             /* REV-1: idle without taking the bus from the master */
++    #else
+         while ((cmd = MARS_SYS_COMM4) == 0);
++    #endif
+ 
+         switch (cmd)
+         {            
+             case MARS_CMD_CLEAR:
++            #ifdef CD32X_OVERLAP
++                /* OVERLAP-2: the master no longer waits for the page swap before it prepares
++                   the next frame - so wait here: clear only the page that is NOT on screen.
++                   pageIndex is the master's variable: read it cache-through.  Don't hammer
++                   the VDP register: short pause between reads. */
++                while ((MARS_VDP_FBCTL & MARS_VDP_FS) !=
++                       *(volatile uint16 *)((uint32)&pageIndex | 0x20000000))
++                {
++                    marsIdle();     /* REV-1: register-only pause (v1.3: volatile counter) */
++                }
++            #endif
+                 pageClear();
+                 break;
+             case MARS_CMD_FLUSH:
++            #ifdef CD32X_PROF
++            {
++                flush_ot(1);                /* PROF-2: the slave is not timed */
++            }
++            #else
+                 flush_ot(1);
++            #endif
++                break;
++#ifdef CD32X
++            case MARS_CMD_CACHE:            /* OL-2b: a new level is in the cart */
++                CacheClear();
++                break;
++            case MARS_CMD_FMV_AUDIO:        /* FMV-1: a movie's sound, until the master stops it */
++                fmvAudio();
+                 break;
++            case MARS_CMD_FMV_PWM:          /* FMV-1: PWM on (while a movie loads) */
++                fmvPwmOn();
++                break;
++#endif
+         }
+ 
+         MARS_SYS_COMM4 = 0;
+@@ -195,10 +938,27 @@ int main()
+ 
+     MARS_SYS_COMM4 = 0;
+ 
++#ifdef CD32X
++    /* on the console the Genesis layer (the loader's text) shows through the 32X picture */
++    MARS_SYS_COMM2 = CD32X_TEXT;                   /* text on: status codes visible if a load fails */
++    cdCmd(CD_CMD_TEXT_ONOFF);
++#endif
++
+     gameInit();
+ 
++#ifdef CD32X
++    CD_STATE(0x4B10);                              /* game loop running: Sub-CPU goes quiet */
++    gGameLoop = 1;                                 /* OL-2c */
++    MARS_SYS_COMM2 = 0;                            /* Genesis text off for the game */
++    cdCmd(CD_CMD_TEXT_ONOFF);
++#endif
++
+     int32 lastFrame = (gFrameIndex >> 1) - 1;
+     int32 fpsCounter = 0;
++#ifdef CD32X_PROF
++    profInitTimer();
++    profFrameStart = profNow();
++#endif
+     int32 fpsFrame = gFrameIndex;
+     int32 vsyncRate = (MARS_VDP_DISPMODE & MARS_NTSC_FORMAT) ? 60 : 50;
+ 
+@@ -211,6 +971,9 @@ int main()
+             fpsFrame += vsyncRate;
+             fps = fpsCounter;
+             fpsCounter = 0;
++        #ifdef CD32X_PROF
++            profPublish();
++        #endif
+         }
+ 
+         if (vsyncRate == 50)
+@@ -227,6 +990,39 @@ int main()
+ 
+         lastFrame = frame;
+ 
++    #ifdef CD32X_PROF
++        uint32 pt0 = profNow();
++        updateInput();
++        uint32 pt1 = profNow();
++        gameUpdate(delta);
++        uint32 pt2 = profNow();
++    #ifdef CD32X_OVERLAP
++        renderFinish();                 /* OVERLAP-1: the slave's rows (= W now) */
++    #else
++        pageWait();
++    #endif
++        uint32 pt3 = profNow();
++        gameRender();
++        uint32 pt4 = profNow();
++        profAcc[0] += pt1 - pt0;
++        profAcc[1] += pt2 - pt1;
++        profAcc[2] += pt3 - pt2;
++        profAcc[3] += pt4 - pt3;
++        profAcc[4] += pt4 - profFrameStart;
++        profFrameStart = pt4;
++        profFrames++;
++    #ifndef CD32X_OVERLAP
++        profDraw();
++        pageFlip();
++    #endif
++    #else
++    #ifdef CD32X_OVERLAP
++        updateInput();
++        gameUpdate(delta);              /* OVERLAP-1: runs while the slave still draws        */
++        renderFinish();                 /* the slave's rows done (it shows the frame itself)  */
++        gameRender();                   /* OVERLAP-2: prepare at once - clear/draw wait for   */
++                                        /* the page swap themselves (secondary, flush_c)      */
++    #else
+         updateInput();
+ 
+         gameUpdate(delta);
+@@ -236,6 +1032,8 @@ int main()
+         gameRender();
+ 
+         pageFlip();
++    #endif
++    #endif
+ 
+         fpsCounter++;
+     }
+diff --git a/src/platform/32x/rasterizer.h b/src/platform/32x/rasterizer.h
+index 4a89334..2b3097a 100644
+--- a/src/platform/32x/rasterizer.h
++++ b/src/platform/32x/rasterizer.h
+@@ -582,7 +582,7 @@ extern "C" void rasterizeGT_c(uint16* pixel, const VertexLink* L, const VertexLi
+     }
+ }
+ 
+-extern "C" void rasterizeSprite_c(uint16* pixel, const VertexLink* L, const VertexLink* R, const ColorIndex* tile)
++extern "C" SDRAM_CODE void rasterizeSprite_c(uint16* pixel, const VertexLink* L, const VertexLink* R, const ColorIndex* tile)
+ {
+     R++;
+     const uint8* ft_lightmap = &gLightmap[L->v.g << 8] + 128;
+@@ -602,6 +602,24 @@ extern "C" void rasterizeSprite_c(uint16* pixel, const VertexLink* L, const Vert
+     int32 du = R->t.uv.v * iw >> 8;
+     int32 dv = R->t.uv.u * ih >> 8;
+ 
++#ifdef CD32X_SPLIT
++    // SPLIT-1: only this SH2's rows (flush_ot puts them in padding)
++    int32 clipY0 = L->padding;
++    int32 clipY1 = R->padding;
++
++    if (L->v.y < clipY0)
++    {
++        int32 d = clipY0 - L->v.y;
++        pixel += d * (FRAME_WIDTH >> 1);
++        v += d * dv;
++        h -= d;
++    }
++
++    if (R->v.y > clipY1)
++    {
++        h -= R->v.y - clipY1;
++    }
++#else
+     if (L->v.y < 0)
+     {
+         pixel -= L->v.y * (FRAME_WIDTH >> 1);
+@@ -613,6 +631,7 @@ extern "C" void rasterizeSprite_c(uint16* pixel, const VertexLink* L, const Vert
+     {
+         h -= R->v.y - FRAME_HEIGHT;
+     }
++#endif
+ 
+     uint8* ptr = (uint8*)pixel;
+ 
+@@ -685,7 +704,7 @@ extern "C" void rasterizeSprite_c(uint16* pixel, const VertexLink* L, const Vert
+     }
+ }
+ 
+-extern "C" void rasterizeLineH_c(uint16* pixel, const VertexLink* L, const VertexLink* R, const ColorIndex* tile)
++extern "C" SDRAM_CODE void rasterizeLineH_c(uint16* pixel, const VertexLink* L, const VertexLink* R, const ColorIndex* tile)
+ {
+     R++;
+     int32 x = L->v.x;
+@@ -715,7 +734,7 @@ extern "C" void rasterizeLineH_c(uint16* pixel, const VertexLink* L, const Verte
+     }
+ }
+ 
+-extern "C" void rasterizeLineV_c(uint16* pixel, const VertexLink* L, const VertexLink* R, const ColorIndex* tile)
++extern "C" SDRAM_CODE void rasterizeLineV_c(uint16* pixel, const VertexLink* L, const VertexLink* R, const ColorIndex* tile)
+ {
+     R++;
+     int32 x = L->v.x;
+@@ -731,7 +750,7 @@ extern "C" void rasterizeLineV_c(uint16* pixel, const VertexLink* L, const Verte
+     }
+ }
+ 
+-extern "C" void rasterizeFillS_c(uint16* pixel, const VertexLink* L, const VertexLink* R, const ColorIndex* tile)
++extern "C" SDRAM_CODE void rasterizeFillS_c(uint16* pixel, const VertexLink* L, const VertexLink* R, const ColorIndex* tile)
+ {
+     R++;
+     int32 x = L->v.x;
+diff --git a/src/platform/32x/render.cpp b/src/platform/32x/render.cpp
+index a0c5c88..7bf5003 100644
+--- a/src/platform/32x/render.cpp
++++ b/src/platform/32x/render.cpp
+@@ -46,6 +46,70 @@ enum FaceType {
+ #define FACE_GOURAUD    (2 << FACE_TYPE_SHIFT)
+ #define FACE_TEXTURE    0x3FFF
+ 
++/* =========================================================================================
++ * CD32X SCREEN SPLIT - how the two SH2s share the drawing  (SPLIT-1 + SPLIT-2, CD32X only)
++ * -----------------------------------------------------------------------------------------
++ * Original OpenLara 32X: both SH2s walk the ordering table (OT) together and take every
++ *   other polygon (index & 1).  To keep the painter's order (far before near) correct where
++ *   their polygons overlap, they stop after EVERY depth layer and wait for each other
++ *   (COMM2 / COMM6 handshake).
++ *   Profiler on hardware (7-9 fps): the master lost 16-30 ms per frame in those waits.
++ *
++ * SPLIT-1: the master draws screen rows [0, split), the slave rows [split, 224).
++ *   Each SH2 walks the WHOLE OT far -> near and draws only what falls in its own rows, so the
++ *   painter's order is right inside each half and the SH2s never wait for each other while
++ *   drawing.  A polygon crossing the split line is clipped to the half (drawPolyY); sprites
++ *   clip in rasterizeSprite_c (rows passed in VertexLink.padding); lines and fills are cut in
++ *   flush_ot.  The master tells the slave where the line is through COMM2 (flush_c).
++ *   Result on hardware: exploring 7-9 fps -> 9-14 fps; the end-of-frame wait S is 0-5 ms.
++ *
++ * SPLIT-2: the line stays still.  SPLIT-1 moved it 4 rows EVERY frame to balance the load.
++ *   A polygon that crosses the line is cut into two pieces, and a cut piece places its texels
++ *   very slightly differently (the cut point is rounded to a whole pixel and the texture
++ *   stepping restarts there).  With the line moving every frame, a still picture flashed:
++ *   pixels near the middle of the screen changed for one frame and changed back.  Now the line
++ *   moves (4 rows) only when one SH2 has been clearly late for 8 frames in a row (see flush_c),
++ *   so a still picture is identical every frame.  Confirmed on hardware: no more flashing.
++ *
++ * Why the line is usually NOT in the middle: the 32X SH2s are master and slave on one shared
++ *   bus.  The master owns the bus; the slave must ask for it for every memory access, so while
++ *   both draw (framebuffer writes, texture reads) the slave stalls and gets less done.  The
++ *   balancing gives the slave fewer rows when it falls behind.  Work that runs mostly from the
++ *   SH2's own cache suits the slave better than drawing does.
++ *
++ * Switch off: build with -DCD32X_NO_SPLIT (back to the original layer-by-layer sharing).
++ * ========================================================================================= */
++#if defined(CD32X) && !defined(CD32X_NO_SPLIT)
++    #define CD32X_SPLIT     // each SH2 draws its own part of the screen (flush_ot, flush_c)
++#endif
++
++/* =========================================================================================
++ * CD32X OVERLAP-1 - the game logic runs while the slave is still drawing  (needs the split)
++ * -----------------------------------------------------------------------------------------
++ * Profiler: game logic (L, 10-39 ms) and scene preparation (X, 9-34 ms) run on the master
++ *   only, while the slave waits for its drawing job.
++ * Ideal: the slave draws frame N while the master prepares frame N+1.  That needs the scene
++ *   lists twice (gVertices 40 KB + gFaces 30 KB + gOT 2.5 KB); only about 30 KB of SDRAM is
++ *   free (bss ends at 0x06037880), so it does not fit.
++ * What fits, with no extra memory: the master draws its rows, then returns at once and runs
++ *   the NEXT frame's input + game logic while the slave is still drawing.  The game logic does
++ *   not touch what the slave reads (gVertices, gFaces, gOT, textures).
++ *   - The slave shows the finished frame itself (flush_ot(1) writes MARS_VDP_FBCTL), but only
++ *     after the master's rows are done too: COMM6 = 0x100 | page (job started),
++ *     0x200 set = master's rows finished.  Showing it any earlier would tear the picture.
++ *   - renderFinish() (main loop, after the game logic) waits for the slave, moves the split
++ *     line if needed (SPLIT-2 rules) and clears the ordering table for the next frame.
++ *   - The master's pageFlip() is not used in the game loop any more.
++ * OVERLAP-2: the main loop does not wait for the page swap (vblank) either.  OVERLAP-1 showed
++ *   the master waiting 3-14 ms per frame for it before preparing the next frame - but
++ *   preparing doesn't touch the screen.  Now only the slave's clear job (secondary) and the
++ *   master's own drawing (flush_c) wait for the swap.
++ * Switch off: build with -DCD32X_NO_OVERLAP.
++ * ========================================================================================= */
++#if defined(CD32X_SPLIT) && !defined(CD32X_NO_OVERLAP)
++    #define CD32X_OVERLAP
++#endif
++
+ #include "rasterizer.h"
+ 
+ extern Level level;
+@@ -115,6 +179,9 @@ X_INLINE Face* faceAdd(int32 depth)
+ 
+ extern "C" {
+     X_NOINLINE void drawPoly(uint32 flags, VertexLink* v, const ColorIndex* tile);
++#ifdef CD32X_SPLIT
++    X_NOINLINE void drawPolyY(uint32 flags, VertexLink* v, const ColorIndex* tile, int32 y0, int32 y1);
++#endif
+     X_INLINE void drawTriangle(uint32 flags, VertexLink* v, const ColorIndex* tile);
+     X_INLINE void drawQuad(uint32 flags, VertexLink* v, const ColorIndex* tile);
+ }
+@@ -595,6 +662,160 @@ int32 sphereIsVisible_c(int32 sx, int32 sy, int32 sz, int32 r)
+     return 1;
+ }
+ 
++#ifdef CD32X_SPLIT
++/* ---------------------------------------------------------------------------------------
++ * SPLIT-1: the master (bit 0) draws rows [0, split), the slave (bit 1) rows [split, 224).
++ * split comes in COMM2 (flush_c).  Both walk the whole ordering table far -> near, so each
++ * half keeps the painter's order by itself and the SH2s never wait for each other.
++ * Polygons crossing the split line are clipped to the half (drawPolyY); sprites clip in
++ * rasterizeSprite_c (bounds in VertexLink.padding); lines and fills are cut here.
++ * --------------------------------------------------------------------------------------- */
++SDRAM_CODE void flush_ot(int32 bit)      // REV-3: in SDRAM (32x.h)
++{
++    VertexLink v[4 + 4];
++    VertexLink* q = v;
++    VertexLink* t = v + 4;
++    // quad
++    q[0].prev = (3 << 4);
++    q[0].next = (1 << 4);
++    q[1].prev = -(1 << 4);
++    q[1].next = (1 << 4);
++    q[2].prev = -(1 << 4);
++    q[2].next = (1 << 4);
++    q[3].prev = -(1 << 4);
++    q[3].next = -(3 << 4);
++    // triangle
++    t[0].prev = (2 << 4);
++    t[0].next = (1 << 4);
++    t[1].prev = -(1 << 4);
++    t[1].next = (1 << 4);
++    t[2].prev = -(1 << 4);
++    t[2].next = -(2 << 4);
++
++    int32 split = MARS_SYS_COMM2;
++    int32 y0 = bit ? split : 0;
++    int32 y1 = bit ? FRAME_HEIGHT : split;
++
++    const ColorIndex* tile = NULL;
++
++    for (int32 i = OT_SIZE - 1; i >= 0; i--)
++    {
++        Face *face = gOT[i];
++
++        for (; face; face = face->next)
++        {
++            uint32 flags = face->flags;
++
++            uint32 type = (flags >> FACE_TYPE_SHIFT) & FACE_TYPE_MASK;
++
++            if (type <= FACE_TYPE_GTA)
++            {
++                VertexLink* ptr = (flags & FACE_TRIANGLE) ? t : q;
++
++                uint8* vPtr = (uint8*)gVertices;
++                ((uint32*)&ptr[0].v)[0] = ((uint32*)(vPtr + face->indices[0]))[0];
++                ((uint32*)&ptr[0].v)[1] = ((uint32*)(vPtr + face->indices[0]))[1];
++
++                ((uint32*)&ptr[1].v)[0] = ((uint32*)(vPtr + face->indices[1]))[0];
++                ((uint32*)&ptr[1].v)[1] = ((uint32*)(vPtr + face->indices[1]))[1];
++
++                ((uint32*)&ptr[2].v)[0] = ((uint32*)(vPtr + face->indices[2]))[0];
++                ((uint32*)&ptr[2].v)[1] = ((uint32*)(vPtr + face->indices[2]))[1];
++
++                int32 minY = ptr[0].v.y;
++                int32 maxY = minY;
++                int32 yy = ptr[1].v.y;
++                if (yy < minY) minY = yy;
++                if (yy > maxY) maxY = yy;
++                yy = ptr[2].v.y;
++                if (yy < minY) minY = yy;
++                if (yy > maxY) maxY = yy;
++
++                if (!(flags & FACE_TRIANGLE)) {
++                    ((uint32*)&ptr[3].v)[0] = ((uint32*)(vPtr + face->indices[3]))[0];
++                    ((uint32*)&ptr[3].v)[1] = ((uint32*)(vPtr + face->indices[3]))[1];
++                    yy = ptr[3].v.y;
++                    if (yy < minY) minY = yy;
++                    if (yy > maxY) maxY = yy;
++                }
++
++                if (maxY <= y0 || minY >= y1)
++                    continue;                           // not in this SH2's half
++
++                if (type > FACE_TYPE_F)
++                {
++                    const Texture &tex = level.textures[flags & FACE_TEXTURE];
++                    tile = (ColorIndex*)tex.tile;
++
++                    ptr[0].t.t = 0xFF00FF00 & (tex.uv01);
++                    ptr[1].t.t = 0xFF00FF00 & (tex.uv01 << 8);
++                    ptr[2].t.t = 0xFF00FF00 & (tex.uv23);
++                    ptr[3].t.t = 0xFF00FF00 & (tex.uv23 << 8);
++                }
++
++                if ((flags & FACE_CLIPPED) || minY < y0 || maxY > y1) {
++                    drawPolyY(flags, ptr, tile, y0, y1);
++                } else {
++                    if (flags & FACE_TRIANGLE) {
++                        drawTriangle(flags, ptr, tile);
++                    } else {
++                        drawQuad(flags, ptr, tile);
++                    }
++                }
++            }
++            else
++            {
++                const Vertex *vert = gVertices + face->indices[0];
++                v[0].v = vert[0];
++                v[1].v = vert[1];
++
++                if (type == FACE_TYPE_SPRITE)
++                {
++                    if (v[1].v.y <= y0 || v[0].v.y >= y1)
++                        continue;
++
++                    const Sprite &sprite = level.sprites[flags & FACE_TEXTURE];
++                    tile = (ColorIndex*)sprite.tile;
++                    v[0].t.t = (sprite.uwvh) & (0xFF00FF00);
++                    v[1].t.t = (sprite.uwvh) & (0xFF00FF00 >> 8);
++                    v[0].padding = (uint16)y0;          // rasterizeSprite_c clips to these rows
++                    v[1].padding = (uint16)y1;
++                }
++                else if (type == FACE_TYPE_LINE_H)
++                {
++                    if (v[0].v.y < y0 || v[0].v.y >= y1)
++                        continue;
++                }
++                else                                    // FILL_S, LINE_V: v[1].v.y = height
++                {
++                    int32 a = v[0].v.y;
++                    int32 b = a + v[1].v.y;
++                    if (a < y0) a = y0;
++                    if (b > y1) b = y1;
++                    if (b <= a)
++                        continue;
++                    v[0].v.y = (int16)a;
++                    v[1].v.y = (int16)(b - a);
++                }
++
++                rasterize(flags, v, tile);
++            }
++        }
++    }
++#ifdef CD32X_OVERLAP
++    if (bit)
++    {
++        // OVERLAP-1: show the frame once the master's rows are finished too (COMM6 bit 9)
++        while (!(MARS_SYS_COMM6 & 0x200))
++        {
++            marsIdle();                                 // don't hammer the COMM register
++        }                                               // (REV-1: no stack writes either)
++        MARS_VDP_FBCTL = MARS_SYS_COMM6 & 1;            // takes effect at the next vblank
++    }
++#endif
++    CacheClear();
++}
++#else
+ void flush_ot(int32 bit)
+ {
+     VertexLink v[4 + 4];
+@@ -714,13 +935,42 @@ void flush_ot(int32 bit)
+             while (MARS_SYS_COMM2 > i);
+         } else {
+             MARS_SYS_COMM2 = i;
++        #ifdef CD32X_PROF
++            {
++                extern volatile uint32 gProfSync;
++                uint32 profNow();       /* PROF-2 */
++                uint32 ts = profNow();
++                while (MARS_SYS_COMM6 > i);
++                gProfSync += profNow() - ts;
++            }
++        #else
+             while (MARS_SYS_COMM6 > i);
++        #endif
+         }
+ #endif
+     }
+     CacheClear();
+ }
++#endif // CD32X_SPLIT
++
++#ifdef CD32X_SPLIT
++// SPLIT-2: the master's watchdog timer (main() runs it): 178 us per tick
++extern "C" volatile uint32 mars_pwdt_ovf_count;
++
++static uint32 splitTicks()
++{
++    uint32 o1, o2;
++    uint8 c;
++    do {
++        o1 = mars_pwdt_ovf_count;
++        c = *(volatile uint8*)0xFFFFFE81;           // WDT RTCNT
++        o2 = mars_pwdt_ovf_count;
++    } while (o1 != o2);
++    return (o1 << 8) | c;
++}
++#endif
+ 
++#ifndef CD32X_OVERLAP
+ void flush_c()
+ {
+ #ifdef PROFILING
+@@ -750,10 +1000,53 @@ void flush_c()
+     fast_memcpy((void*)0xC0000000, &block_render_start, size >> 2);
+ #endif
+     PROFILE(CNT_FLUSH);
++#ifdef CD32X_PROF
++    extern volatile uint32 gProfDraw;
++    uint32 profNow();                   /* PROF-2 */
++    uint32 profT0 = profNow();
++#endif
+ 
+     MARS_WAIT();
+     CacheClear();
+ 
++#ifdef CD32X_SPLIT
++    static int32 gSplitY = FRAME_HEIGHT / 2;        // SPLIT-1: first row the slave draws
++    static int32 gSplitVote = 0;                    // SPLIT-2: frames in a row one SH2 was late
++
++    MARS_SYS_COMM2 = gSplitY;
++    MARS_SYS_COMM6 = OT_SIZE;
++    MARS_SYS_COMM4 = MARS_CMD_FLUSH;
++
++    flush_ot(0);
++
++    uint32 splitT0 = splitTicks();
++    MARS_WAIT();                                    // master waiting for the slave
++    uint32 splitLate = splitTicks() - splitT0;      // watchdog ticks, 178 us each
++  #ifdef CD32X_PROF
++    {
++        extern volatile uint32 gProfSync;
++        gProfSync += splitLate;                     // S
++    }
++  #endif
++
++    // SPLIT-2: move the line only when one SH2 is clearly late 8 frames in a row, so a still
++    // picture stays identical (a line moving every frame made the pixels near it flash)
++    if (splitLate > 22) {                           // slave > ~4 ms late: master takes 4 more rows
++        gSplitVote = (gSplitVote > 0 ? gSplitVote : 0) + 1;
++    } else if (splitLate == 0) {                    // slave was done first: give it 4 more rows
++        gSplitVote = (gSplitVote < 0 ? gSplitVote : 0) - 1;
++    } else {
++        gSplitVote = 0;                             // close enough: leave the line alone
++    }
++
++    if (gSplitVote >= 8) {
++        if (gSplitY < FRAME_HEIGHT - 32) gSplitY += 4;
++        gSplitVote = 0;
++    } else if (gSplitVote <= -8) {
++        if (gSplitY > 32) gSplitY -= 4;
++        gSplitVote = 0;
++    }
++#else
+     MARS_SYS_COMM2 = OT_SIZE;
+     MARS_SYS_COMM6 = OT_SIZE;
+     MARS_SYS_COMM4 = MARS_CMD_FLUSH;
+@@ -761,14 +1054,115 @@ void flush_c()
+     flush_ot(0);
+ 
+     MARS_WAIT();
++#endif
+ 
+     dmaFill(gOT, 0, OT_SIZE * sizeof(gOT[0]));
++#ifdef CD32X_PROF
++    gProfDraw += profNow() - profT0;
++#endif
+ 
+ #ifdef ON_CHIP_RENDER
+     CacheControl(0);
+     CacheControl(SH2_CCTL_CP | SH2_CCTL_CE);
+ #endif
+ }
++#else // CD32X_OVERLAP
++extern uint16 pageIndex;                            // main.cpp: the page shown / to be shown
++void pageWait();                                    // main.cpp: wait until pageIndex is shown
++
++static int32 gSplitY = FRAME_HEIGHT / 2;            // SPLIT-1: first row the slave draws
++static int32 gSplitVote = 0;                        // SPLIT-2: frames in a row one SH2 was late
++static int32 gRenderPending = 0;                    // OVERLAP-1: the slave has (or had) a frame
++
++#ifdef CD32X_PROF
++    #define SPLIT_MIN   64                          // the profiler text (rows 4-57) is the master's
++#else
++    #define SPLIT_MIN   16
++#endif
++#define SPLIT_MAX   (FRAME_HEIGHT - 16)
++
++// OVERLAP-1: called by the main loop after the game logic (and by flush_c as a safety net)
++void renderFinish()
++{
++    if (!gRenderPending)
++        return;
++    gRenderPending = 0;
++
++    uint32 t0 = splitTicks();
++    MARS_WAIT();                                    // the slave's rows (it also shows the frame)
++    uint32 late = splitTicks() - t0;                // watchdog ticks, 178 us each
++  #ifdef CD32X_PROF
++    {
++        extern volatile uint32 gProfSync;
++        gProfSync += late;                          // S
++    }
++  #endif
++
++    // SPLIT-2 rules, measured after the game logic now: the master's share = its rows + logic
++    if (late > 22) {                                // slave > ~4 ms late: master takes 4 more rows
++        gSplitVote = (gSplitVote > 0 ? gSplitVote : 0) + 1;
++    } else if (late == 0) {                         // slave was done first: give it 4 more rows
++        gSplitVote = (gSplitVote < 0 ? gSplitVote : 0) - 1;
++    } else {
++        gSplitVote = 0;
++    }
++
++    if (gSplitVote >= 8) {
++        if (gSplitY < SPLIT_MAX) gSplitY += 4;
++        gSplitVote = 0;
++    } else if (gSplitVote <= -8) {
++        if (gSplitY > SPLIT_MIN) gSplitY -= 4;
++        gSplitVote = 0;
++    }
++
++    dmaFill(gOT, 0, OT_SIZE * sizeof(gOT[0]));     // the slave is done with it
++}
++
++void flush_c()
++{
++    renderFinish();                                 // never start while the slave has a frame
++
++    gVerticesBase = gVertices;
++
++    if (gFacesBase == gFaces)
++    {
++        MARS_WAIT();                                // a clear() may still be running
++        pageWait();                                 // OVERLAP-2: the last swap must be done
++        pageIndex ^= 1;                             // nothing to draw: show the page as it is
++        MARS_VDP_FBCTL = pageIndex;
++        return;
++    }
++
++    gFacesBase = gFaces;
++
++  #ifdef CD32X_PROF
++    extern volatile uint32 gProfDraw;
++    uint32 profNow();
++    uint32 profT0 = profNow();
++  #endif
++
++    MARS_WAIT();                                    // clear() done
++    pageWait();                                     // OVERLAP-2: the last frame is on screen,
++                                                    // so this page is free (no-op after clear)
++    CacheClear();
++
++    pageIndex ^= 1;                                 // the page this frame goes to
++    MARS_SYS_COMM2 = gSplitY;
++    MARS_SYS_COMM6 = 0x100 | pageIndex;             // job started, master's rows not done yet
++    MARS_SYS_COMM4 = MARS_CMD_FLUSH;
++
++    flush_ot(0);                                    // the master's rows
++
++  #ifdef CD32X_PROF
++    void profDrawFrame();
++    profDrawFrame();                                // the numbers, before the frame is shown
++    gProfDraw += profNow() - profT0;
++  #endif
++
++    MARS_SYS_COMM6 = 0x300 | pageIndex;             // master's rows done: the slave may show it
++    gRenderPending = 1;                             // back to the game - the slave finishes
++}
++#endif // CD32X_OVERLAP
+ 
+ void renderInit()
+ {
+@@ -788,6 +1182,43 @@ void renderLevelFree()
+ {
+ }
+ 
++#ifdef CD32X
++// FMV-1: the movie player (fmv.inc) borrows the face and vertex lists while a movie plays -
++// 70 KB of SDRAM nothing else uses then.  Only if the two lie back to back in memory (one
++// block, as the linker puts them now: both 16-byte aligned, sizes multiples of 16); otherwise
++// NULL = no movie.  FMV-1b: not the ordering table - 12 bytes of padding follow it, so the
++// old three-list check always failed (and the table must stay 0 anyway).
++void* renderScratch(int32* size)
++{
++    // FMV-1c: as plain numbers, hidden from the optimizer - comparing the arrays' addresses
++    // directly let GCC "know" that two different arrays never touch: always NULL
++    uint32 f = (uint32)gFaces;
++    uint32 v = (uint32)gVertices;
++    __asm__ volatile ("" : "+r"(f), "+r"(v));
++    uint8* a;
++    if (f + sizeof(gFaces) == v)
++        a = (uint8*)f;
++    else if (v + sizeof(gVertices) == f)
++        a = (uint8*)v;
++    else {
++        *size = 0;
++        return NULL;
++    }
++    if ((uint32)a & 15) {                       // the picture copy needs 16-byte alignment
++        *size = 0;
++        return NULL;
++    }
++    *size = int32(sizeof(gFaces) + sizeof(gVertices));
++    return a;
++}
++
++void renderScratchDone()                        // given back: the lists are rebuilt every frame
++{
++    gVerticesBase = gVertices;
++    gFacesBase = gFaces;
++}
++#endif
++
+ extern "C" X_INLINE void drawTriangle(uint32 flags, VertexLink* v, const ColorIndex* tile)
+ {
+     VertexLink* top = v;
+@@ -899,6 +1330,141 @@ extern "C" X_NOINLINE void drawPoly(uint32 flags, VertexLink* v, const ColorInde
+     rasterize(flags, top, tile);
+ }
+ 
++#ifdef CD32X_SPLIT
++// SPLIT-1: exact interpolation where it can't overflow (|ta| < 32767, values < 65536),
++// otherwise drawPoly's 1/64 steps.  Exact = the two halves meet without a visible seam.
++static X_INLINE int32 splLerp(int32 a, int32 b, int32 ta, int32 tb)
++{
++    if (ta > -32767 && ta < 32767)
++        return b + (((a - b) * ta / tb) >> 6);
++    int32 t = ta / tb;
++    return b + (((a - b) * t) >> 6);
++}
++
++#ifdef CD32X_HWDIV
++// REV-4: the same numbers with the SH2's divider (32x.h).  The divisor tb is written once per
++// cut edge (SPL_AXIS); t = ta / tb is only needed (and only computed) when |ta| >= 32767.
++// v1.3 called libgcc's __sdivsi3 (in the cart) four or five times per cut edge.
++static X_INLINE int32 splDiv(int32 n)
++{
++    SH2_DIVU_DVDNT = n;                             // starts the division by DVSR
++    return SH2_DIVU_DVDNT;                          // waits for the quotient
++}
++
++static X_INLINE int32 splLerpHW(int32 a, int32 b, int32 ta, int32 t)
++{
++    if (ta > -32767 && ta < 32767)
++        return b + (splDiv((a - b) * ta) >> 6);
++    return b + (((a - b) * t) >> 6);
++}
++#endif
++
++// SPLIT-1: drawPoly with this SH2's rows [y0, y1)
++extern "C" SDRAM_CODE X_NOINLINE void drawPolyY(uint32 flags, VertexLink* v, const ColorIndex* tile, int32 y0, int32 y1)
++{
++#ifdef CD32X_HWDIV
++    #define SPL_AXIS(X, Y, edge, output) {\
++        int32 ta = (edge - b->v.X) << 6;\
++        int32 tb = (a->v.X - b->v.X);\
++        SH2_DIVU_DVSR = tb;\
++        int32 t = (ta > -32767 && ta < 32767) ? 0 : splDiv(ta);\
++        VertexLink* p = output + count++;\
++        p->v.X = edge;\
++        p->v.Y = splLerpHW(a->v.Y, b->v.Y, ta, t);\
++        p->v.g = splLerpHW(a->v.g, b->v.g, ta, t);\
++        p->t.uv.u = splLerpHW(a->t.uv.u, b->t.uv.u, ta, t);\
++        p->t.uv.v = splLerpHW(a->t.uv.v, b->t.uv.v, ta, t);\
++    }
++#else
++    #define SPL_LERP(a,b,ta,tb)     splLerp(a, b, ta, tb)
++
++    #define SPL_AXIS(X, Y, edge, output) {\
++        int32 ta = (edge - b->v.X) << 6;\
++        int32 tb = (a->v.X - b->v.X);\
++        VertexLink* p = output + count++;\
++        p->v.X = edge;\
++        p->v.Y = SPL_LERP(a->v.Y, b->v.Y, ta, tb);\
++        p->v.g = SPL_LERP(a->v.g, b->v.g, ta, tb);\
++        p->t.uv.u = SPL_LERP(a->t.uv.u, b->t.uv.u, ta, tb);\
++        p->t.uv.v = SPL_LERP(a->t.uv.v, b->t.uv.v, ta, tb);\
++    }
++#endif
++
++    #define SPL_CLIP(X, Y, X0, X1, input, output) {\
++        const VertexLink *a, *b = input + pCount - 1;\
++        for (int32 i = 0; i < pCount; i++) {\
++            a = b;\
++            b = input + i;\
++            if (a->v.X < X0) {\
++                if (b->v.X < X0) continue;\
++                SPL_AXIS(X, Y, X0, output);\
++            } else if (a->v.X > X1) {\
++                if (b->v.X > X1) continue;\
++                SPL_AXIS(X, Y, X1, output);\
++            }\
++            if (b->v.X < X0) {\
++                SPL_AXIS(X, Y, X0, output);\
++            } else if (b->v.X > X1) {\
++                SPL_AXIS(X, Y, X1, output);\
++            } else {\
++                output[count++] = *b;\
++            }\
++        }\
++        if (count < 3) return;\
++    }
++
++    VertexLink tmp[8];
++    VertexLink out[8];
++
++    int32 pCount = (flags & FACE_TRIANGLE) ? 3 : 4;
++    int32 count = 0;
++
++    SPL_CLIP(x, y, 0, FRAME_WIDTH, v, tmp);         // clip x to the screen
++
++    pCount = count;
++    count = 0;
++
++    SPL_CLIP(y, x, y0, y1, tmp, out);               // clip y to this SH2's half
++
++    VertexLink* first = out;
++    VertexLink* last = out + count - 1;
++
++    bool skip = (first->v.y == last->v.y);
++
++    VertexLink* top = (first->v.y < last->v.y) ? first : last;
++    first->prev = (count - 1) << 4;
++    first->next = (1 << 4);
++    last->prev = -(1 << 4);
++    last->next = (1 - count) << 4;
++
++    for (int32 i = 1; i < count - 1; i++)
++    {
++        VertexLink* p = out + i;
++
++        if (p->v.y != top->v.y)
++        {
++            if (p->v.y < top->v.y)
++            {
++                top = p;
++            }
++            skip = false;
++        }
++
++        p->prev = -(1 << 4);
++        p->next = (1 << 4);
++    }
++
++    if (skip)
++        return;
++
++    rasterize(flags, top, tile);
++
++    #undef SPL_LERP
++    #undef SPL_AXIS
++    #undef SPL_CLIP
++}
++#endif
++
+ void faceAddRoom(const Room* room)
+ {
+     if (room->info->quadsCount > 0) {
+diff --git a/src/platform/32x/roq.h b/src/platform/32x/roq.h
+new file mode 100644
+index 0000000..d74dfd6
+--- /dev/null
++++ b/src/platform/32x/roq.h
+@@ -0,0 +1,129 @@
++/* RoQ video decoder - from Victor Luchits' Doom 32X: Resurrection (d32xr, MIT licence,
++   Copyright (c) 2024 Victor Luchits), decoder by Dr. Tim Ferguson (2001).
++   FMV-1 (OpenLara CD32X): used unchanged except the CD32X guard, the extern "C" block and
++   the SH2 DMA registers/constants (OpenLara's 32x.h is C++ only and lacks them). */
++#ifndef _av_roq_h
++#define _av_roq_h
++#ifdef CD32X
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++#include <stdint.h>
++
++#ifndef SH2_DMA_SAR1                   /* the master's DMA channel 1 (picture copy) */
++#define SH2_DMA_SAR1    (*(volatile unsigned long *)0xFFFFFF90)
++#define SH2_DMA_DAR1    (*(volatile unsigned long *)0xFFFFFF94)
++#define SH2_DMA_TCR1    (*(volatile unsigned long *)0xFFFFFF98)
++#define SH2_DMA_CHCR1   (*(volatile unsigned long *)0xFFFFFF9C)
++#endif
++
++#ifndef SH2_DMA_CHCR_DE
++#define SH2_DMA_CHCR_DM_INC   (1<<14)  // destination address incremented
++#define SH2_DMA_CHCR_SM_INC   (1<<12)  // source address incremented
++#define SH2_DMA_CHCR_TS_16BU  (3<<10)  // 16-byte units
++#define SH2_DMA_CHCR_AR_ARM   (1<<9)   // auto-request
++#define SH2_DMA_CHCR_AL_AH    (1<<7)   // DACK active high
++#define SH2_DMA_CHCR_DS_EDGE  (1<<6)   // DREQ by edge
++#define SH2_DMA_CHCR_DL_AH    (1<<5)   // DREQ rising edge
++#define SH2_DMA_CHCR_TB_CS    (0<<4)   // cycle-steal
++#define SH2_DMA_CHCR_TA_DA    (0<<3)   // dual address
++#define SH2_DMA_CHCR_TE       (1<<1)   // transfer ended
++#define SH2_DMA_CHCR_DE       (1<<0)   // DMA enabled
++#endif
++
++#define RoQ_INFO				0x1001
++#define RoQ_QUAD_CODEBOOK		0x1002
++#define RoQ_QUAD_VQ				0x1011
++#define RoQ_SOUND_MONO			0x1020
++#define RoQ_SOUND_STEREO		0x1021
++#define RoQ_SIGNAGURE 			0x1084
++
++#define RoQ_ID_MOT		0x00
++#define RoQ_ID_FCC		0x01
++#define RoQ_ID_SLD		0x02
++#define RoQ_ID_CCC		0x03
++
++#define RoQ_MAX_CANVAS_SIZE 288*224
++
++#define RoQ_SAMPLE_RATE    22050
++
++#ifdef __32X__
++#define RoQ_ATTR_SDRAM
++//#define RoQ_ATTR_SDRAM  __attribute__((section(".data"), aligned(16)))
++#else
++#define RoQ_ATTR_SDRAM
++#endif
++
++typedef struct {
++	uint8_t y0123[4];
++	uint8_t uvb[2];
++} roq_yuvcell;
++
++typedef struct {
++	union {
++		short rgb555[4];
++		int rgb555x2[2];
++	};
++} roq_cell;
++
++typedef struct {
++	char idx[4];
++} roq_qcell;
++
++typedef struct {
++	unsigned char* data;
++	unsigned char* page_base;
++	unsigned char* page_end;
++	unsigned char *dma_base;
++	unsigned char *dma_dest;
++	unsigned char *snddma_base;
++	unsigned char *snddma_dest;
++	short eof, bof;
++	unsigned char *backupdma_dest;
++	char clear_cache; // whether the CPU cache needs to be cleared after reading a chunk
++} roq_file;
++
++typedef void (*roq_getchunk_t)(roq_file*);
++typedef void (*roq_retchunk_t)(roq_file*);
++
++typedef struct {
++	unsigned chunk_arg0, chunk_arg1;
++	unsigned vqflg;
++	unsigned vqflg_pos;
++	unsigned vqid;
++	unsigned char *buf;
++	int buf_len;
++	struct roq_info_s *ri;
++} roq_parse_ctx;
++
++typedef struct roq_info_s {
++	short *canvascopy;
++	roq_cell *cells_u;
++	roq_qcell *qcells_u;
++	roq_cell *cells;
++	roq_qcell *qcells;
++	roq_file *fp;
++	int buf_size;
++	unsigned width, height, frame_num;
++	int display_height;
++	roq_getchunk_t get_chunk;
++	roq_retchunk_t ret_chunk;
++	short *framebuffer, *canvas;
++	int canvas_pitch;
++	unsigned framerate, displayrate, frametics, frametics_frac;
++} roq_info;
++
++/* -------------------------------------------------------------------------- */
++
++void roq_init(roq_info* ri, roq_file *fp, roq_getchunk_t getch, roq_retchunk_t retch, int displayrate, short *framebuffer);
++int roq_read_info(roq_file* fp, roq_info* ri) __attribute__((optimize("Os")));
++int roq_read_frame(roq_info* ri, char loop, void (*finish)(void))
++	RoQ_ATTR_SDRAM
++	;
++
++#ifdef __cplusplus
++}
++#endif
++#endif // CD32X
++#endif
+diff --git a/src/platform/32x/roq_read.c b/src/platform/32x/roq_read.c
+new file mode 100644
+index 0000000..c142abe
+--- /dev/null
++++ b/src/platform/32x/roq_read.c
+@@ -0,0 +1,593 @@
++/* ------------------------------------------------------------------------
++ * Id Software's RoQ video file format decoder
++ *
++ * Dr. Tim Ferguson, 2001.
++ * For more details on the algorithm:
++ *         http://www.csse.monash.edu.au/~timf/videocodec.html
++ *
++ * This is a simple decoder for the Id Software RoQ video format.  In
++ * this format, audio samples are DPCM coded and the video frames are
++ * coded using motion blocks and vector quantisation.
++ *
++ * Note: All information on the RoQ file format has been obtained through
++ *   pure reverse engineering.  This was achieved by giving known input
++ *   audio and video frames to the roq.exe encoder and analysing the
++ *   resulting output text and RoQ file.  No decompiling of the Quake III
++ *   Arena game was required.
++ *
++ * You may freely use this source code.  I only ask that you reference its
++ * source in your projects documentation:
++ *       Tim Ferguson: http://www.csse.monash.edu.au/~timf/
++ * ------------------------------------------------------------------------ */
++/* FMV-1 (OpenLara CD32X): Victor Luchits' copy from Doom 32X: Resurrection (MIT), unchanged
++   except this CD32X guard, MARS (selects the SH2 assembly paths), no 32x.h, and SLD below. */
++#ifdef CD32X
++#define MARS
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include "roq.h"                       /* has the SH2 DMA registers (32x.h is C++) */
++
++/* -------------------------------------------------------------------------- */
++
++static inline int roq_fgetc(roq_file* fp) {
++	return *fp->data++;
++}
++
++static inline int roq_fgetsc(roq_file* fp) {
++	return *(int8_t *)fp->data++;
++}
++
++static inline int roq_feof(roq_file* fp) {
++	return fp->eof && fp->data == NULL;
++}
++
++static inline unsigned short get_word(roq_file* fp)
++{
++	unsigned short ret;
++	ret = (fp->data[0]);
++	ret |= (fp->data[1]) << 8;
++	fp->data += 2;
++	return ret;
++}
++
++/* -------------------------------------------------------------------------- */
++static inline unsigned int get_long(roq_file* fp)
++{
++	unsigned int ret;
++	ret = (fp->data[0]);
++	ret |= (fp->data[1]) << 8;
++	ret |= (fp->data[2]) << 16;
++	ret |= (fp->data[3]) << 24;
++	fp->data += 4;
++	return ret;
++}
++
++
++/* -------------------------------------------------------------------------- */
++int roq_read_info(roq_file* fp, roq_info* ri)
++{
++	unsigned int head1;
++	int head2;
++	unsigned framerate;
++	unsigned chunk_id;
++
++	ri->get_chunk(fp);
++
++	head1 = get_word(fp);
++	head2 = get_long(fp);
++	framerate = get_word(fp);
++
++	ri->ret_chunk(ri->fp);
++
++	if (head1 != RoQ_SIGNAGURE && head2 != -1)
++	{
++		//printf("Not an RoQ file.\n");
++		return 1;
++	}
++
++	ri->framerate = framerate;
++	ri->frametics = (ri->displayrate * 0x10000 / framerate) >> 16;
++	ri->frametics_frac = (ri->displayrate * 0x10000 / framerate) & 0xffff;
++
++	while (!roq_feof(fp))
++	{
++		ri->get_chunk(fp);
++
++		if (roq_feof(fp)) {
++			break;
++		}
++
++		chunk_id = get_word(fp);
++		/*chunk_size = */get_long(fp);
++		roq_fgetc(fp);
++		roq_fgetc(fp);
++
++		if (chunk_id == RoQ_INFO)		/* video info */
++		{
++			ri->width = get_word(fp);
++			ri->height = get_word(fp);
++		}
++
++		ri->ret_chunk(ri->fp);
++
++		if (chunk_id == RoQ_INFO)
++			break;
++	}
++
++	if (roq_feof(fp))
++	{
++		// no info chunk
++		return 1;
++	}
++
++	ri->canvas = ri->framebuffer;
++
++	ri->display_height = ri->height;
++	if (ri->canvas_pitch * ri->display_height < RoQ_MAX_CANVAS_SIZE)
++	{
++		if (ri->width < 320)
++			ri->canvas += (320 - ri->width) / 2;
++		ri->canvas = (void *)((uintptr_t)ri->canvas & ~15);
++		ri->canvas_pitch = (160 + ri->width / 2 + 15) & ~15;
++	}
++	else
++	{
++		ri->canvas_pitch = ri->width;
++	}
++	while (ri->canvas_pitch * ri->display_height > RoQ_MAX_CANVAS_SIZE || ri->display_height > 224)
++		ri->display_height -= 16;
++
++	ri->frame_num = 0;
++
++	return 0;
++}
++
++/* -------------------------------------------------------------------------- */
++static inline void apply_motion_4x4(roq_parse_ctx* ctx, unsigned x, unsigned y, unsigned char mv, char mean_x, char mean_y)
++{
++	int mx, my, i;
++	short *src, *dst;
++	roq_info *ri = ctx->ri;
++	int pitch = ri->canvas_pitch;
++
++	mx = x + 8 - (mv / 16) - mean_x;
++	my = y + 8 - (mv & 0xf) - mean_y;
++
++	dst = ri->canvas + y * ri->canvas_pitch + x;
++	src = ri->canvascopy + my * ri->canvas_pitch + mx;
++
++	for (i = 0; i < 4; i++)
++	{
++		dst[0] = src[0];
++		dst[1] = src[1];
++		dst[2] = src[2];
++		dst[3] = src[3];
++		src += pitch;
++		dst += pitch;
++	}
++}
++
++/* -------------------------------------------------------------------------- */
++static inline void apply_motion_8x8(roq_parse_ctx* ctx, unsigned x, unsigned y, unsigned char mv, char mean_x, char mean_y)
++{
++	int mx, my, i;
++	short *src, *dst;
++	roq_info *ri = ctx->ri;
++	int pitch = ri->canvas_pitch;
++
++	mx = x + 8 - (mv / 16) - mean_x;
++	my = y + 8 - (mv & 0xf) - mean_y;
++	
++	dst = ri->canvas + y * ri->canvas_pitch + x;
++	src = ri->canvascopy + my * ri->canvas_pitch + mx;
++
++	for (i = 0; i < 8; i++)
++	{
++		dst[0] = src[0];
++		dst[1] = src[1];
++		dst[2] = src[2];
++		dst[3] = src[3];
++		dst[4] = src[4];
++		dst[5] = src[5];
++		dst[6] = src[6];
++		dst[7] = src[7];
++		src += pitch;
++		dst += pitch;
++	}
++}
++
++void roq_init(roq_info* ri, roq_file* fp, roq_getchunk_t getch, roq_retchunk_t retch, int displayrate, short *framebuffer)
++{
++	ri->fp = fp;
++	ri->get_chunk = getch;
++	ri->ret_chunk = retch;
++	ri->framebuffer = framebuffer;
++	ri->displayrate = displayrate;
++	ri->cells = ri->cells_u + 128;
++	ri->qcells = ri->qcells_u + 128;
++	fp->backupdma_dest = (unsigned char *)framebuffer;
++}
++
++/* -------------------------------------------------------------------------- */
++
++#define RMASK ((1<<5)-1)
++#define GMASK (((1<<10)-1) & ~RMASK)
++#define BMASK (((1<<15)-1) & ~(RMASK|GMASK))
++
++#define YUVClip8(v) (__builtin_expect((v) & ~YUV_MASK2, 0) ? (__builtin_expect((int)(v) < 0, 0) ? 0 : YUV_MASK2) : (v))
++#define YUVRGB555(r,g,b) ((((((r)) >> (10+(YUV_FIX2-7))))) | (((((g)) >> (5+(YUV_FIX2-7)))) & GMASK) | (((((b)) >> (0+(YUV_FIX2-7)))) & BMASK))
++
++#define YUV_FIX2 8                   // fixed-point precision for YUV->RGB
++const int YUV_MUL2 = (1 << YUV_FIX2);
++const int YUV_NUDGE2 = (1 << (YUV_FIX2 - 1));
++const int YUV_MASK2 = (256 << YUV_FIX2) - 1;
++
++const int v1402C_ = 1.402000 * YUV_MUL2;
++const int v0714C_ = 0.714136 * YUV_MUL2;
++
++const int u0344C_ = 0.344136 * YUV_MUL2;
++const int u1772C_ = 1.772000 * YUV_MUL2;
++
++#define yuv2rgb555(y,u,v) \
++	YUVRGB555( \
++		YUVClip8(((unsigned)y << YUV_FIX2) + (v1402C_ * (v-128) + YUV_NUDGE2)), \
++		YUVClip8(((unsigned)y << YUV_FIX2) - (u0344C_ * (u-128) + v0714C_ * (v-128) - YUV_NUDGE2)), \
++		YUVClip8(((unsigned)y << YUV_FIX2) + (u1772C_ * (u-128) + YUV_NUDGE2)) \
++	)
++
++/* -------------------------------------------------------------------------- */
++
++typedef int (*roq_applier)(roq_parse_ctx* ctx, unsigned x, unsigned y, char* buf);
++
++static int roq_apply_mot(roq_parse_ctx* ctx, unsigned x, unsigned y, char* buf) RoQ_ATTR_SDRAM;
++static int roq_apply_fcc(roq_parse_ctx* ctx, unsigned x, unsigned y, char* buf) RoQ_ATTR_SDRAM;
++static int roq_apply_sld(roq_parse_ctx* ctx, unsigned x, unsigned y, char* buf) RoQ_ATTR_SDRAM;
++static int roq_apply_cc(roq_parse_ctx* ctx, unsigned x, unsigned y, char* buf) RoQ_ATTR_SDRAM;
++
++static int roq_apply_fcc2(roq_parse_ctx* ctx, unsigned x, unsigned y, char* buf) RoQ_ATTR_SDRAM;
++static int roq_apply_sld2(roq_parse_ctx* ctx, unsigned x, unsigned y, char* buf) RoQ_ATTR_SDRAM;
++static int roq_apply_cc2(roq_parse_ctx* ctx, unsigned x, unsigned y, char* buf) RoQ_ATTR_SDRAM;
++
++roq_applier appliers[] = { &roq_apply_mot, &roq_apply_fcc, &roq_apply_sld, &roq_apply_cc };
++roq_applier appliers2[] = { &roq_apply_mot, &roq_apply_fcc2, &roq_apply_sld2, &roq_apply_cc2 };
++
++static inline int roq_read_vqid(roq_parse_ctx* ctx, unsigned char* buf, unsigned* pvqid)
++{
++	int adv = 0;
++	unsigned vqid;
++
++#ifdef MARS
++	if (ctx->vqflg_pos == 0)
++	{	
++		ctx->vqflg = ((buf[1] << 8) | buf[0]) << 16;
++		ctx->vqflg_pos = 8;
++		adv = 2;
++	}
++
++	__asm volatile(
++		"shll %1\n\t"
++		"movt r0\n\t"
++		"shll %1\n\t"
++		"movt %0\n\t"
++		"add r0, r0\n\t"
++		"add r0, %0\n\t"
++		: "=r"(vqid), "+r"(ctx->vqflg) : : "r0"
++	);
++#else
++	if (ctx->vqflg_pos == 0)
++	{
++		unsigned shf;
++		unsigned qfl = buf[0] | (buf[1] << 8);
++
++		ctx->vqflg = 0;
++		for (shf = 0; shf < 16; shf += 2) {
++			ctx->vqflg <<= 2;
++			ctx->vqflg |= (qfl >> shf) & 0x3;
++		}
++
++		ctx->vqflg_pos = 8;
++		adv = 2;
++	}
++
++	vqid = ctx->vqflg & 0x3;
++	ctx->vqflg >>= 2;
++#endif
++
++	*pvqid = vqid;
++	ctx->vqflg_pos--;
++
++	return adv;
++}
++
++static int roq_apply_mot(roq_parse_ctx* ctx, unsigned x, unsigned y, char* buf)
++{
++	return 0;
++}
++
++static int roq_apply_fcc(roq_parse_ctx* ctx, unsigned x, unsigned y, char* buf)
++{
++	apply_motion_8x8(ctx, x, y, buf[0], ctx->chunk_arg1, ctx->chunk_arg0);
++	return 1;
++}
++
++static int roq_apply_sld(roq_parse_ctx* ctx, unsigned x, unsigned y, char* buf)
++{
++	int i, j;
++	roq_info* ri = ctx->ri;
++	unsigned pitch = ri->canvas_pitch;
++	roq_qcell *qcell = ri->qcells + buf[0];
++	short *dst = ri->canvas + y * pitch + x;
++	short *dst2 = dst + pitch;
++
++	pitch *= 2;
++
++	for (i = 0; i < 4; i += 2)
++	{
++		roq_cell *cell0 = ri->cells + qcell->idx[i];
++		roq_cell *cell1 = ri->cells + qcell->idx[i+1];
++
++		for (j = 0; j < 2; j++)
++		{
++			/* FMV-1: plain C instead of the SH2 assembly here - the assembly put the
++			   cell's second pixel at x+4 and the next cell's first at x+2 (checked against
++			   ffmpeg's decoder); this order matches it.  Pixel pairs: 2x upscale. */
++			short a0 = cell0->rgb555[j*2], a1 = cell0->rgb555[j*2+1];
++			short b0 = cell1->rgb555[j*2], b1 = cell1->rgb555[j*2+1];
++			dst[0] = dst[1] = dst2[0] = dst2[1] = a0;
++			dst[2] = dst[3] = dst2[2] = dst2[3] = a1;
++			dst[4] = dst[5] = dst2[4] = dst2[5] = b0;
++			dst[6] = dst[7] = dst2[6] = dst2[7] = b1;
++
++			dst += pitch;
++			dst2 += pitch;
++		}
++	}
++
++	return 1;
++}
++
++static int roq_apply_cc(roq_parse_ctx* ctx, unsigned xp, unsigned yp, char* buf)
++{
++	unsigned k;
++	unsigned x, y;
++	int bpos = 0;
++
++	for (k = 0; k < 4; k++)
++	{
++		unsigned vqid;
++
++		x = (k & 1) * 4;
++		x += xp;
++
++		y = (k & 2) * 2;
++		y += yp;
++
++		bpos += roq_read_vqid(ctx, (uint8_t *)&buf[bpos], &vqid);
++
++		bpos += appliers2[vqid](ctx, x, y, &buf[bpos]);
++	}
++
++	return bpos;
++}
++
++static int roq_apply_fcc2(roq_parse_ctx* ctx, unsigned x, unsigned y, char* buf)
++{
++	apply_motion_4x4(ctx, x, y, buf[0], ctx->chunk_arg1, ctx->chunk_arg0);
++	return 1;
++}
++
++static int roq_apply_sld2(roq_parse_ctx* ctx, unsigned x, unsigned y, char* buf)
++{
++	roq_qcell *qcell = ctx->ri->qcells + buf[0];
++	roq_apply_cc2(ctx, x, y, qcell->idx);
++	return 1;
++}
++
++static int roq_apply_cc2(roq_parse_ctx* ctx, unsigned x, unsigned y, char* buf)
++{
++	roq_info* ri = ctx->ri;
++	unsigned pitch = ri->canvas_pitch;
++	int *dst = (int *)(ri->canvas + y * pitch + x);
++	roq_cell *cell0, *cell1, *cell2, *cell3;
++
++	pitch /= 2;
++
++	cell0 = ri->cells + buf[0];
++	cell1 = ri->cells + buf[1];
++
++	dst[0] = cell0->rgb555x2[0];
++	dst[1] = cell1->rgb555x2[0];
++	dst += pitch;
++
++	dst[0] = cell0->rgb555x2[1];
++	dst[1] = cell1->rgb555x2[1];
++	dst += pitch;
++
++	cell2 = ri->cells + buf[2];
++	cell3 = ri->cells + buf[3];
++
++	dst[0] = cell2->rgb555x2[0];
++	dst[1] = cell3->rgb555x2[0];
++	dst += pitch;
++
++	dst[0] = cell2->rgb555x2[1];
++	dst[1] = cell3->rgb555x2[1];
++
++	return 4;
++}
++
++/* -------------------------------------------------------------------------- */
++
++void roq_read_vq(roq_parse_ctx *ctx, unsigned char *buf, int chunk_size, int dodma)
++{
++	int bpos = 0;
++	int xpos, ypos;
++	roq_info *ri = ctx->ri;
++	int width = ri->width;
++	int dmafrom = 0, dmato = 0;
++	int finalxfer = 0;
++
++	ypos = 0;
++	for (bpos = 0; bpos < chunk_size; )
++	{
++		int xp, yp;
++
++		for (xpos = 0; xpos < width; xpos += 16)
++		{
++			for (yp = ypos; yp < ypos + 16; yp += 8)
++			{
++				for (xp = xpos; xp < xpos + 16; xp += 8)
++				{
++					bpos += roq_read_vqid(ctx, &buf[bpos], &ctx->vqid);
++					bpos += appliers[ctx->vqid](ctx, xp, yp, (char *)&buf[bpos]);
++					if (bpos >= chunk_size)
++						goto checknext;
++				}
++			}
++		}
++
++checknext:
++		if (dodma)
++		{
++			int othery;
++
++xfer:
++			othery = ypos;
++			if (othery > dmato)
++			{
++				if (dmato > 0) 
++				{
++					if (finalxfer)
++					{
++						while (!(SH2_DMA_CHCR1 & SH2_DMA_CHCR_TE)) ; // wait on TE
++					}
++					else
++					{
++						if (!(SH2_DMA_CHCR1 & SH2_DMA_CHCR_TE))
++							goto next; // do not wait on TE
++					}
++					SH2_DMA_CHCR1 = 0; // clear TE
++				}
++
++				dmafrom = dmato;
++				dmato = othery;
++
++				// start DMA
++				SH2_DMA_SAR1 = (uint32_t)(ri->canvas + ri->canvas_pitch*dmafrom/2*sizeof(short));
++				SH2_DMA_DAR1 = (uint32_t)(ri->canvascopy + ri->canvas_pitch*dmafrom/2*sizeof(short));
++				// xfer count (4 * # of 16 byte units)
++				SH2_DMA_TCR1 = ((((dmato - dmafrom)*ri->canvas_pitch*sizeof(short)) >> 4) << 2);
++				SH2_DMA_CHCR1 = SH2_DMA_CHCR_DM_INC|SH2_DMA_CHCR_SM_INC|SH2_DMA_CHCR_TS_16BU|SH2_DMA_CHCR_AR_ARM|SH2_DMA_CHCR_TB_CS|SH2_DMA_CHCR_DS_EDGE|SH2_DMA_CHCR_AL_AH|SH2_DMA_CHCR_DL_AH|SH2_DMA_CHCR_TA_DA|SH2_DMA_CHCR_DE;
++			}
++
++			if (finalxfer)
++			{
++				while (!(SH2_DMA_CHCR1 & SH2_DMA_CHCR_TE)) ; // wait on TE
++				return;
++			}
++		}
++
++next:
++		xpos = 0;
++		ypos += 16;
++		if (ypos >= ri->display_height)
++			break;
++	}
++
++	if (dodma && dmato < ri->display_height)
++	{
++		finalxfer = 1;
++		goto xfer;
++	}
++}
++
++int roq_read_frame(roq_info* ri, char loop, void (*finish)(void))
++{
++	int i, nv1, nv2;
++	roq_file* fp = ri->fp;
++	int chunk_id = 0, chunk_arg0 = 0, chunk_arg1 = 0;
++	int chunk_size = 0;
++	roq_parse_ctx ctx;
++
++	while (1)
++	{
++		chunk_id = 0;
++
++		ri->get_chunk(fp);
++
++		if (roq_feof(fp)) {
++			break;
++		}
++
++		chunk_id = get_word(fp);
++		chunk_size = get_long(fp);
++		chunk_arg0 = roq_fgetc(fp);
++		chunk_arg1 = roq_fgetc(fp);
++
++		if (chunk_id == RoQ_QUAD_VQ)
++			break;
++
++		switch (chunk_id)
++		{
++		case RoQ_QUAD_CODEBOOK:
++			if ((nv1 = chunk_arg1) == 0) nv1 = 256;
++			if ((nv2 = chunk_arg0) == 0 && (nv1 * 6 < chunk_size)) nv2 = 256;
++
++			for (i = 0; i < nv1; i++)
++			{
++				uint8_t y[4], u, v;
++				roq_cell *cell = ri->cells + (int8_t)i;
++
++				y[0] = roq_fgetsc(fp);
++				y[1] = roq_fgetsc(fp);
++				y[2] = roq_fgetsc(fp);
++				y[3] = roq_fgetsc(fp);
++				u = roq_fgetsc(fp);
++				v = roq_fgetsc(fp);
++
++				cell->rgb555[0] = yuv2rgb555(y[0], u, v);
++				cell->rgb555[1] = yuv2rgb555(y[1], u, v);
++				cell->rgb555[2] = yuv2rgb555(y[2], u, v);
++				cell->rgb555[3] = yuv2rgb555(y[3], u, v);
++			}
++
++			if (nv2 > 127)
++			{
++				memcpy(ri->qcells, fp->data, 128*4);
++				memcpy(ri->qcells - 128, fp->data + 128 * 4, (nv2 - 128)*4);
++			}
++			else
++			{
++				memcpy(ri->qcells, fp->data, nv2*4);
++			}
++			break;
++		}
++
++		ri->ret_chunk(ri->fp);
++	}
++
++	finish();
++
++	if (chunk_id != RoQ_QUAD_VQ)
++	{
++		ri->ret_chunk(ri->fp);
++		return 0;
++	}
++
++	ri->frame_num++;
++
++	ctx.ri = ri;
++	ctx.chunk_arg0 = chunk_arg0;
++	ctx.chunk_arg1 = chunk_arg1;
++	ctx.vqflg = 0;
++	ctx.vqflg_pos = 0;
++	ctx.vqid = RoQ_ID_MOT;
++
++	roq_read_vq(&ctx, fp->data, chunk_size, 1);
++
++	ri->ret_chunk(ri->fp);
++	return 1;
++}
++
++#endif // CD32X
+diff --git a/src/platform/32x/sound.cpp b/src/platform/32x/sound.cpp
+index 2512df5..e6cf0ce 100644
+--- a/src/platform/32x/sound.cpp
++++ b/src/platform/32x/sound.cpp
+@@ -1,5 +1,157 @@
+ #include "common.h"
+ 
++#ifdef CD32X
++/* ---------------------------------------------------------------------------------------
++ * OL-4: CD audio (CDDA) on the Sega CD.  The engine asks for the ORIGINAL game's track
++ * numbers; the disc is laid out so that disc track N = game track N (tools/make_music_tracks.py,
++ * music_map.txt - numbers without music are 2 s of silence).  The Sub-CPU plays them:
++ *   CMD 45, COMM2 = track         -> BIOS MSCPLAYR (repeat)  - title music and ambience
++ *   CMD 45, COMM2 = track | 0x8000 -> BIOS MSCPLAY1 (once)    - every other cue
++ *   CMD 54                         -> BIOS MSCSTOP
++ * Rule: no CD data reads while music plays - osLoadLevel() stops the music first.
++ * --------------------------------------------------------------------------------------- */
++#include "32x.h"
++
++#define SND_CMD_PLAY        45
++#define SND_CMD_STOP        54
++#define SND_TRACK_FIRST     2
++#define SND_TRACK_LAST      80      /* OL-11: 60 + level = the level's own music */
++#define SND_COMM14          (*(volatile uint16 *)0x2000402E)   /* Sub-CPU: drive status nibble */
++
++static void sndCmd(uint16 cmd)
++{
++    MARS_SYS_COMM0 = cmd;
++    for (int32 n = 0; n < 2000000 && MARS_SYS_COMM0 != 0; n++)
++        for (volatile int32 k = 0; k < 64; k++) {}
++}
++
++static bool sndLoops(int32 track)
++{
++    return (track >= 2 && track <= 5) || (track >= 57);   /* title, ambience, level music */
++}
++
++void sndInit() {}
++void sndInitSamples() {}
++void sndFreeSamples() {}
++/* OL-6: one sound effect per frame goes to the Sub-CPU with the pad request (the loudest);
++   the number is the engine's sample index + 1, the Sub-CPU maps it to the level's PCM pack */
++static int32 sndPending = 0;
++static int32 sndPendingVol = 0;
++
++void* sndPlaySample(int32 index, int32 volume, int32 pitch, int32 mode)
++{
++    if (index < 0 || index > 253)
++        return NULL;
++    if (!sndPending || volume > sndPendingVol)
++    {
++        sndPending = index + 1;
++        sndPendingVol = volume;
++    }
++    return NULL;
++}
++
++/* SFXVOL-1: the pending effect's volume (1-64, 64 = full; soundPlay() already lowers it
++   with the distance to the camera).  main.cpp sends it in COMM2 with the pad request. */
++int32 sndPendingVolume()
++{
++    return sndPending ? X_CLAMP(sndPendingVol, 1, 64) : 0;
++}
++
++int32 sndTakePending()
++{
++    int32 p = sndPending;
++    sndPending = 0;
++    return p;
++}
++
++/* OL-10: what the SH2 started (the engine asks "still playing?" every frame) */
++static int32 sndTrack = 0;          /* 0 = none */
++static int32 sndCutLevel = -1;      /* CUTAUDIO-1: the cut-scene whose sound has started */
++static int32 sndGrace = 0;          /* frames a play-once cue counts as playing regardless */
++
++void sndPlayTrack(int32 track)
++{
++    /* CUTAUDIO-1: a cut-scene's sound (game tracks 22-25, voices + music from the game CD) -
++       once per visit: when it has ended the engine asks again, then nothing more plays.
++       PASSPORT-3: in a cut-scene level ANY request means its own track (the level table has
++       none for them); anywhere else 22-25 are ignored (rule below: cues 6-56) */
++    int32 cut = 0;
++    switch (gLevelID)
++    {
++        case LVL_TR1_CUT_1: cut = TRACK_TR1_CUT_1; break;     /* 23 Qualopec      */
++        case LVL_TR1_CUT_2: cut = TRACK_TR1_CUT_2; break;     /* 25 Tihocan       */
++        case LVL_TR1_CUT_3: cut = TRACK_TR1_CUT_3; break;     /* 24 Natla's Mines */
++        case LVL_TR1_CUT_4: cut = TRACK_TR1_CUT_4; break;     /* 22 Atlantis      */
++        default: break;
++    }
++    if (cut)
++    {
++        track = cut;
++        if (sndCutLevel == int32(gLevelID))
++            return;
++        sndCutLevel = int32(gLevelID);
++        MARS_SYS_COMM2 = (uint16)(track | 0x8000);
++        sndCmd(SND_CMD_PLAY);
++        sndTrack = track;
++        sndGrace = 180;
++        return;
++    }
++
++    /* OL-11/12: any ambience request - including "none" (-1) - plays the level's own music
++       (disc track 60 + level); trigger cues 6-56 have no album music (except 13, the secret
++       chime) and are ignored, so the level music is not interrupted */
++    if (track < 2 || track == 5 || (track >= 57 && track <= 59))
++    {
++        if (int32(gLevelID) < 0 || int32(gLevelID) > 20)
++            return;
++        track = 60 + int32(gLevelID);
++    }
++    else if (track >= 6 && track <= 56 && track != 13)
++        return;
++    if (track < SND_TRACK_FIRST || track > SND_TRACK_LAST)
++        return;
++    MARS_SYS_COMM2 = (uint16)(track | (sndLoops(track) ? 0 : 0x8000));
++    sndCmd(SND_CMD_PLAY);
++    sndTrack = track;
++    sndGrace = 180;                 /* ~3 s: the drive seeks before it reports "playing" */
++}
++
++void sndForgetTrack()               /* FMV-1: a movie stopped the music - the engine restarts it */
++{
++    sndTrack = 0;
++    sndGrace = 0;
++}
++
++void sndStopTrack()
++{
++    /* OL-12: music triggers that say "stop" are ignored - the level music keeps playing.
++       (A level load stops the music itself, before it reads the disc.) */
++}
++
++bool sndTrackIsPlaying()
++{
++    if (!sndTrack)
++        return false;
++    if (sndLoops(sndTrack))         /* looping music plays until it is stopped */
++        return true;
++    if (sndGrace > 0) {
++        sndGrace--;
++        return true;
++    }
++    int32 st = (SND_COMM14 >> 12) & 0x0F;   /* drive: 1 playing, 2 seeking, 3 scanning */
++    if (st == 1 || st == 2 || st == 3)
++        return true;
++    sndTrack = 0;                   /* the cue has ended - the engine restarts the level music */
++    return false;
++}
++
++void sndStopSample(int32 index) {}
++void sndStop() { sndCutLevel = -1; }   /* OL-8: effects only - the CD music keeps playing;
++                                           CUTAUDIO-1: a level starts - its sound may play */
++void sndFill(uint8* buffer, int32 count) {}
++
++#else
++
+ void sndInit()
+ {
+     // TODO
+@@ -49,3 +201,5 @@ void sndFill(uint8* buffer, int32 count)
+ {
+     // TODO
+ }
++
++#endif

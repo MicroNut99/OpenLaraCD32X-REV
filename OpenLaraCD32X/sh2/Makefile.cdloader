@@ -1,0 +1,27 @@
+# D32XR CD32X - SH2 loader (master + slave), built in d32xr-master/ next to D32XR itself.
+# It uses ONLY its own files: cdloader_sh2.c, cdl_crt0.s (our CD-boot start-up, with the CD
+# boot table), cdloader.ld.  D32XR's own crt0.s, linker scripts, headers, objects, Makefile
+# and D32XR.32x are never used, touched or deleted.
+ROOTDIR = /opt/toolchains/sega
+PREFIX  = $(ROOTDIR)/sh-elf/bin/sh-elf-
+CC      = $(PREFIX)gcc
+LD      = $(PREFIX)ld
+OBJC    = $(PREFIX)objcopy
+CCFLAGS = -c -std=c11 -m2 -mb -O2 -Wall -ffunction-sections -fdata-sections -D__32X__ -DMARS
+
+all: CDLOADER.32x
+
+CDLOADER.32x: CDLOADER.elf
+	$(OBJC) -O binary CDLOADER.elf CDLOADER.32x
+
+CDLOADER.elf: cdl_crt0.o cdloader_sh2.o
+	$(LD) -EB -T cdloader.ld -nostdlib -Map=cdloader.map cdl_crt0.o cdloader_sh2.o -o CDLOADER.elf
+
+cdl_crt0.o: cdl_crt0.s
+	$(CC) $(CCFLAGS) cdl_crt0.s -o cdl_crt0.o
+
+cdloader_sh2.o: cdloader_sh2.c
+	$(CC) $(CCFLAGS) cdloader_sh2.c -o cdloader_sh2.o
+
+clean:
+	rm -f cdl_crt0.o cdloader_sh2.o CDLOADER.elf CDLOADER.32x cdloader.map

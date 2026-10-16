@@ -1,0 +1,16 @@
+OpenLara-src/
+*.o
+*.elf
+*.32x
+*.32X
+*.iso
+*.bin
+*.cue
+*.PKD
+*.SND
+*.wav
+*.mp3
+build/
+OpenLaraCD32X/subcpu/ROMS/*
+!OpenLaraCD32X/subcpu/ROMS/README.txt
+OpenLaraCD32X/subcpu/cd/
