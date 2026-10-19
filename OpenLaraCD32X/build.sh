@@ -23,6 +23,9 @@ fi
 if [ -n "$CART" ] && [ ! -f "$ENGINE/carttest.inc" ]; then
   echo "==> applying engine/openlara-cart-test.patch to OpenLara-src (the cart test)"
   git -C "$ENGINE/../../.." apply "$HERE/../engine/openlara-cart-test.patch"
+elif [ -n "$CART" ] && ! grep -q "CART-2" "$ENGINE/carttest.inc"; then
+  echo "==> updating the cart test in OpenLara-src (start-up -> options)"
+  git -C "$ENGINE/../../.." apply "$HERE/../engine/openlara-cart-test-1to2.patch"
 fi
 if [ -n "$CART" ]; then echo "==> CART TEST BUILD: ${CART} MB"; fi
 

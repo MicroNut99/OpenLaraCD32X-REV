@@ -24,7 +24,9 @@ CMD 68 writes the page as one even byte to `0xA130F2` with the listener's existi
 (`safe_cart_xfer`: interrupts off, RV = 1, byte copy, RV = 0).
 
 ## On the console
-The test runs at start, before the game:
+The test is in the **title's options**: on the title menu's ring, choose **Detail** (the
+sunglasses), go down to **Cart Test** and press A. Only on the title menu, and only in the `CART=`
+builds (its load test uses the level slot, which a level in play needs). Then:
 1. **Writing / Reading.** Every page gets its own 4 KB pattern in **piece 15** (cart
    `0x3FF000` of the page: the save area's last piece, free in the ledger, never used by
    OpenLara). The 8 MB build writes pages 1–3 and 6; the 16 MB build writes pages 1–7. Then the
@@ -45,7 +47,7 @@ The test runs at start, before the game:
    | `BAD` (red) | no memory there (8 MB board with the 16 MB GreenPAK image, pages 4–7) |
    | `68K-RB` (red) | CMD 61's own 68000 read-back failed for that page |
    | `FOUND` | 4 MB = no paging (every write went to page 1); 8 MB; 16 MB. Green when it matches the build |
-   | `CMD 68 FAILED - NO PAGE SWITCH` (red) | the Sub-CPU didn't do the page command (a disc built without `CART=`, or a Sub-CPU mismatch). The test stops there; START plays |
+   | `CMD 68 FAILED - NO PAGE SWITCH` (red) | the Sub-CPU didn't do the page command (a disc built without `CART=`, or a Sub-CPU mismatch). The test stops there; START goes back |
    | `SAVE AREA UNCHANGED` | settings and the saved game (pieces 0–14 of page 1) are untouched: must be green |
 3. **A = load test** (optional, about a minute): TITLE.PKD is loaded into every page that showed
    `OK` (on a 4 MB cart: page 1) with the normal level load (CMD 38 + 46), and its checksum shown
@@ -54,7 +56,7 @@ The test runs at start, before the game:
    16 MB build its pages 1–3 show `SAME AS`, so none is loaded (pages 4–7 would be page 0, the
    game itself, and are never loaded into).
    During loading the red bar of the loading screen is drawn over the bottom line; that's normal.
-4. **START** = window 1 back to page 1, and the game starts as normal.
+4. **START** = window 1 back to page 1, back to the options. The title music starts again.
 
 ## Expected results
 | Cart | 8 MB build | 16 MB build |
