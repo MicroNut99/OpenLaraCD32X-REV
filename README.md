@@ -60,6 +60,12 @@ its own place in the RAM cart and stays there – the cart keeps its contents wi
 Cart layout: game 0–0.5 MB, Caves 0.5–2 MB, the level being played 2–3.94 MB, settings and
 saves in the last 64 KB. `build.sh` refuses to build if the game or Caves would overlap.
 
+## 8 MB / 16 MB cart test builds
+For the 16MB-PCB-CD32X paged SRAM cart: `CART=8 bash build.sh` or `CART=16 bash build.sh` makes
+a test disc (`CDROMPlayer_cart8_music.cue` / `_cart16_`) that tests the cart's pages at start,
+then plays the game. `bash build.sh` without `CART` is unchanged. See `docs/CART_TEST.md` and
+`docs/SRAM_8MB_16MB_DESIGN.md`.
+
 ## Controls (6-button pad)
 | Button | Action |
 |---|---|

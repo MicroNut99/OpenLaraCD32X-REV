@@ -1,0 +1,362 @@
+diff --git a/src/platform/32x/Makefile b/src/platform/32x/Makefile
+index 51671c0..4c0efd0 100644
+--- a/src/platform/32x/Makefile
++++ b/src/platform/32x/Makefile
+@@ -35,6 +35,11 @@ ifdef PROF
+ SHCCFLAGS += -DCD32X_PROF
+ endif
+ 
++# CART-1: make CD32X=1 CART=8 / CART=16 - the 8 / 16 MB cart test build (carttest.inc)
++ifdef CART
++SHCCFLAGS += -DCD32X_CART_MB=$(CART)
++endif
++
+ ifdef CD32X
+ SHCCFLAGS += -DCD32X
+ # OL-2: asm/*.s go through the C preprocessor with INCPATH only - so the define goes there
+diff --git a/src/platform/32x/carttest.inc b/src/platform/32x/carttest.inc
+new file mode 100644
+index 0000000..7c9b59e
+--- /dev/null
++++ b/src/platform/32x/carttest.inc
+@@ -0,0 +1,315 @@
++/* ---------------------------------------------------------------------------------------
++ * CART-1: cart test for the 8 MB / 16 MB SRAM cart (MicroNut99 16MB-PCB-CD32X).
++ *   Only in the test builds:  CART=8 bash build.sh   or   CART=16 bash build.sh
++ *   (make CD32X=1 CART=8|16 -> CD32X_CART_MB; subcpu: make cd CART=8|16 -> CMD 68).
++ *   Without CART nothing of this is built and the disc is v1.3.
++ *
++ * Runs once at start, before the game.  Uses only:
++ *   CMD 68 (new, test builds only): window 1 page, written by the 68000 with the existing
++ *          listener routine 26 (interrupts off, RV = 1, one even byte to 0xA130F2)
++ *   CMD 58 + 61 (existing): a 4 KB piece -> window 1 + 0x3F0000 + piece * 4 KB, read back
++ *          by the 68000 through 0x900000 (reply 1 = ok)
++ *   CMD 38 + 46 (existing, A button): a file into window 1
++ *   SH2 reads, cache-through (0x22xxxxxx).
++ *
++ * 1. Pattern test.  Piece 15 (the save area's last 4 KB: free in the ledger, never used by
++ *    OpenLara) of each page gets its own 4 KB pattern: pages 1-3 (8 MB build) or 1-7 (16 MB
++ *    build); the 8 MB build also writes page 6 to tell the boards apart.  Then every page is
++ *    read back by the SH2.  Results per page: OK, SAME AS n (aliased), BAD (no memory).
++ *    CMD 68 refused or not answered (e.g. a Sub-CPU built without CART): the test stops and
++ *    says CMD 68 FAILED - never a false FOUND 4MB.
++ *    Size: page 1 holds the last page's pattern -> 4 MB (no mapper, every write went to page 1);
++ *    page 2 holds page 6's -> 8 MB (8 MB GreenPAK image); page 6 BAD -> 8 MB (16 MB image,
++ *    no U2); all distinct -> 16 MB.  4 KB of varying words can't come off a floating bus.
++ * 2. The save area (pieces 0-14 of page 1) is summed before and after: must be unchanged.
++ * 3. A = load test: TITLE.PKD (210 KB) loaded into each good page with CMD 46, checksum shown
++ *    per page, then every page read again (still there after the others were loaded).
++ * START = window 1 back to page 1, the game starts as v1.3.
++ * --------------------------------------------------------------------------------------- */
++#define CT_CMD_PAGE     68
++#define CT_PIECE        15
++#define CT_TAIL         (0x223F0000 + CT_PIECE * 4096)     /* window 1 + 0x1FF000, cache-through */
++#define CT_WORDS        2048
++#define CT_LEVEL1       0x22200000                         /* window 1 start, cache-through */
++
++enum { CT_BLACK = 0, CT_WHITE, CT_GREEN, CT_RED, CT_YELLOW, CT_GREY };
++
++static int32  ctPages;                 /* pages this build tests: 3 or 7 */
++static int32  ctPage = 1;              /* window 1 now */
++static int32  ctFound;                 /* 4, 8, 16 */
++static int32  ctRes[8];                /* per page: 0 untested, -1 BAD, -2 write failed, p = holds page p's pattern */
++static bool   ctWrOk[8];
++static bool   ctSaveOk;
++static uint32 ctSum[8], ctSum2[8];
++static int32  ctLen;
++static bool   ctCmdFail;               /* CMD 68 refused or not answered: no page switch at all */
++
++/* ---- 3x5 font, 2x scaled (8 x 12 cell) ---- */
++static const char ctChars[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-:./";
++static const uint8 ctFont[][5] = {
++    {2,5,7,5,5},{6,5,6,5,6},{3,4,4,4,3},{6,5,5,5,6},{7,4,6,4,7},{7,4,6,4,4},{3,4,5,5,3},{5,5,7,5,5},
++    {7,2,2,2,7},{1,1,1,5,2},{5,5,6,5,5},{4,4,4,4,7},{5,7,7,5,5},{6,5,5,5,5},{2,5,5,5,2},{6,5,6,4,4},
++    {2,5,5,6,3},{6,5,6,5,5},{3,4,2,1,6},{7,2,2,2,2},{5,5,5,5,7},{5,5,5,5,2},{5,5,7,7,5},{5,5,2,5,5},
++    {5,5,2,2,2},{7,1,2,4,7},
++    {7,5,5,5,7},{2,6,2,2,7},{7,1,7,4,7},{7,1,7,1,7},{5,5,7,1,1},{7,4,7,1,7},{7,4,7,5,7},{7,1,1,1,1},
++    {7,5,7,5,7},{7,5,7,1,7},
++    {0,0,7,0,0},{0,2,0,2,0},{0,0,0,0,2},{1,1,2,4,4}
++};
++
++static void ctText(int32 x, int32 y, uint8 col, const char* s)        /* x even */
++{
++    volatile uint16* fb = (volatile uint16*)&MARS_FRAMEBUFFER + 0x100;
++    uint16 fg = (uint16)((col << 8) | col);
++    for (; *s; s++, x += 8)
++    {
++        const uint8* g = 0;
++        for (int32 i = 0; ctChars[i]; i++)
++            if (ctChars[i] == *s) { g = ctFont[i]; break; }
++        for (int32 r = 0; r < 12; r++)
++        {
++            volatile uint16* row = fb + (y + r) * (FRAME_WIDTH / 2) + (x >> 1);
++            for (int32 c = 0; c < 4; c++)
++            {
++                bool on = g && r >= 1 && r <= 10 && c < 3 && ((g[(r - 1) >> 1] >> (2 - c)) & 1);
++                row[c] = on ? fg : 0;
++            }
++        }
++    }
++}
++
++static char* ctNum(char* p, uint32 v, int32 digits, bool hex)      /* fixed width */
++{
++    for (int32 i = digits - 1; i >= 0; i--)
++    {
++        uint32 d = hex ? (v & 15) : (v % 10);
++        p[i] = (char)(d < 10 ? '0' + d : 'A' + d - 10);
++        v = hex ? (v >> 4) : (v / 10);
++    }
++    return p + digits;
++}
++
++static char* ctStr(char* p, const char* s) { while (*s) *p++ = *s++; return p; }
++
++static char* ctMB(char* p, int32 mb) { p = ctNum(p, mb, mb < 10 ? 1 : 2, false); return ctStr(p, "MB"); }
++
++static void ctPalette()
++{
++    static const uint16 pal[6] = { 0x0000, 0x7FFF, 0x03E0, 0x001F, 0x03FF, 0x4210 };   /* BGR555 */
++    for (int32 i = 0; i < 6; i++)
++    {
++        while ((MARS_VDP_FBCTL & MARS_VDP_PEN) == 0);
++        (&MARS_CRAM)[i] = pal[i];
++    }
++}
++
++/* the whole screen, into both frame buffers */
++static void ctDraw(const char* status)
++{
++    for (int32 b = 0; b < 2; b++)
++    {
++        pageWait();
++        pageClear();
++        char t[48], *p;
++        int32 y = 8;
++        p = ctStr(t, "CART TEST  BUILD ");
++        p = ctMB(p, ctPages == 7 ? 16 : 8);
++        *p = 0;
++        ctText(8, y, CT_WHITE, t); y += 16;
++        if (ctCmdFail)
++            ctText(8, y, CT_RED, "CMD 68 FAILED - NO PAGE SWITCH");
++        else if (ctFound)
++        {
++            p = ctStr(t, "FOUND ");
++            p = ctMB(p, ctFound);
++            *p = 0;
++            ctText(8, y, ctFound == (ctPages == 7 ? 16 : 8) ? CT_GREEN : CT_YELLOW, t);
++        }
++        y += 20;
++        for (int32 pg = 1; pg <= 7; pg++)
++        {
++            if (!ctRes[pg]) continue;
++            uint8 col = CT_GREEN;
++            p = ctStr(t, "PAGE ");
++            p = ctNum(p, pg, 1, false);
++            p = ctStr(p, " ");
++            if (ctRes[pg] == pg)       p = ctStr(p, "OK     ");
++            else if (ctRes[pg] == -1)  { p = ctStr(p, "BAD    "); col = CT_RED; }
++            else                       { p = ctStr(p, "SAME AS "); p = ctNum(p, ctRes[pg], 1, false); col = CT_YELLOW; }
++            if (!ctWrOk[pg]) { p = ctStr(p, " 68K-RB"); col = CT_RED; }
++            if (ctSum[pg])
++            {
++                p = ctStr(p, " LOAD ");
++                p = ctNum(p, ctSum[pg], 8, true);
++                if (ctSum2[pg] != ctSum[pg] || ctSum[pg] != ctSum[1]) { p = ctStr(p, " X"); col = CT_RED; }
++            }
++            *p = 0;
++            ctText(8, y, col, t);
++            y += 14;
++        }
++        y += 6;
++        if (ctFound || ctCmdFail)
++            ctText(8, y, ctSaveOk ? CT_GREEN : CT_RED, ctSaveOk ? "SAVE AREA UNCHANGED" : "SAVE AREA CHANGED");
++        ctText(8, 200, CT_GREY, status);
++        pageFlip();
++    }
++    pageWait();
++}
++
++static bool ctSelect(int32 page)
++{
++    MARS_SYS_COMM2 = (uint16)page;
++    CD_COMM12_16 = 0;
++    cdCmd(CT_CMD_PAGE);
++    bool ok = MARS_SYS_COMM0 == 0 && CD_COMM12_16 == 1;   /* answered, and done */
++    if (!ok) ctCmdFail = true;
++    CacheClear();                                  /* window 1 shows other memory now */
++    ctPage = page;
++    return ok;
++}
++
++static uint16 ctPattern(int32 page, int32 i)
++{
++    if (i == 0) return (uint16)(0x4300 | page);    /* 'C' + page */
++    uint32 v = (uint32)(page * 0x1F3D) ^ (uint32)(i * 0x9E37) ^ 0xA55A;
++    return (uint16)(v ^ (v >> 7));
++}
++
++static bool ctWritePage(int32 page)               /* piece 15 of the page: its pattern */
++{
++    for (int32 i = 0; i < CT_WORDS; i++)
++    {
++        MARS_SYS_COMM8 = ctPattern(page, i);
++        MARS_SYS_COMM2 = (uint16)i;
++        cdCmd(CS_CMD_PUT);
++    }
++    MARS_SYS_COMM2 = CT_PIECE;
++    CD_COMM12_16 = 0;
++    cdCmd(CS_CMD_TO_CART);
++    return CD_COMM12_16 == 1;
++}
++
++static int32 ctReadPage(int32 page)               /* whose pattern does the page hold? */
++{
++    volatile uint16* s = (volatile uint16*)CT_TAIL;
++    int32 q = s[0] ^ 0x4300;
++    if (q < 1 || q > 7) return -1;
++    for (int32 i = 1; i < CT_WORDS; i++)
++        if (s[i] != ctPattern(q, i)) return -1;
++    return q;
++}
++
++static uint32 ctSumArea(uint32 addr, int32 words)
++{
++    volatile uint16* s = (volatile uint16*)addr;
++    uint32 sum = 0x4F4C;
++    for (int32 i = 0; i < words; i++)
++        sum = ((sum << 1) | (sum >> 31)) + s[i];
++    return sum;
++}
++
++static void ctPatternTest()
++{
++    int32 order[8], n = 0;
++    for (int32 pg = 1; pg <= ctPages; pg++) order[n++] = pg;
++    if (ctPages == 3) order[n++] = 6;              /* the 8 MB build: which kind of 8 MB board */
++
++    ctDraw("WRITING");
++    for (int32 i = 0; i < n; i++)
++    {
++        if (!ctSelect(order[i]))                   /* no CMD 68 (wrong Sub-CPU build?): stop */
++            return;
++        ctWrOk[order[i]] = ctWritePage(order[i]);
++    }
++    ctDraw("READING");
++    for (int32 i = 0; i < n; i++)
++    {
++        ctSelect(order[i]);
++        ctRes[order[i]] = ctReadPage(order[i]);
++    }
++    ctSelect(1);
++
++    int32 last = order[n - 1];
++    if (ctRes[1] == last && last != 1)        ctFound = 4;   /* every write went to page 1 */
++    else if (ctRes[2] == 6)                   ctFound = 8;   /* 8 MB image: page 6 = page 2 */
++    else if (ctRes[6] != 6)                   ctFound = 8;   /* 16 MB image, no U2 */
++    else                                      ctFound = 16;
++}
++
++static void ctLoadTest()
++{
++    int32 top = ctFound == 16 ? ctPages : (ctFound == 8 ? 3 : 1);
++    if (top > ctPages) top = ctPages;
++    MARS_SYS_COMM2 = 0;                            /* music off - no CD data reads while it plays */
++    cdCmd(54);
++    for (int32 pg = 1; pg <= top; pg++)
++    {
++        if (ctRes[pg] != pg && !(ctFound == 4 && pg == 1)) continue;   /* 4 MB: page 1 is the cart */
++        ctDraw("LOADING TITLE.PKD");
++        ctSelect(pg);
++        int32 res = cdLoadToCart((uint16)(CD_FILE_LEVEL_BASE + LVL_TR1_TITLE));
++        CacheClear();
++        ctLen = res;
++        ctSum[pg] = res > 0 ? ctSumArea(CT_LEVEL1, res >> 1) : 0xFFFFFFFF;
++    }
++    for (int32 pg = 1; pg <= top; pg++)            /* still there after the others? */
++    {
++        if (!ctSum[pg] || ctLen <= 0) continue;
++        ctSelect(pg);
++        ctSum2[pg] = ctSumArea(CT_LEVEL1, ctLen >> 1);
++    }
++    ctSelect(1);
++    gCartLevel = -1;                               /* page 1's level slot holds TITLE now */
++}
++
++static void cartTest()
++{
++    ctPages = (CD32X_CART_MB >= 16) ? 7 : 3;
++    ctPalette();
++
++    uint32 save0 = ctSumArea(0x223F0000, 15 * CT_WORDS);   /* pieces 0-14 on page 1 */
++    ctPatternTest();
++    if (!ctCmdFail)
++        ctSelect(1);
++    ctSaveOk = ctSumArea(0x223F0000, 15 * CT_WORDS) == save0;
++
++    bool loaded = false;
++    while (1)
++    {
++        ctDraw((loaded || ctCmdFail) ? "START: PLAY" : "A: LOAD TEST   START: PLAY");
++        uint16 pad;
++        do {                                       /* wait for a press */
++            for (volatile int32 k = 0; k < 20000; k++) {}
++            cdCmd(CD_CMD_GET_PAD);
++            pad = MARS_SYS_COMM8;
++        } while (!(pad & (SEGA_CTRL_A | SEGA_CTRL_START)));
++        if (pad & SEGA_CTRL_START)
++        {
++            do {                                   /* released, so the title menu doesn't get it */
++                for (volatile int32 k = 0; k < 20000; k++) {}
++                cdCmd(CD_CMD_GET_PAD);
++            } while (MARS_SYS_COMM8 & SEGA_CTRL_START);
++            break;
++        }
++        if (ctCmdFail)
++            continue;
++        if (!loaded)
++        {
++            ctLoadTest();
++            loaded = true;
++        }
++        do {                                       /* wait for the release */
++            for (volatile int32 k = 0; k < 20000; k++) {}
++            cdCmd(CD_CMD_GET_PAD);
++        } while (MARS_SYS_COMM8 & SEGA_CTRL_A);
++    }
++
++    if (!ctCmdFail)
++        ctSelect(1);                               /* the game: window 1 = page 1, as v1.3 */
++    for (int32 b = 0; b < 2; b++)
++    {
++        pageWait();
++        pageClear();
++        pageFlip();
++    }
++    pageWait();
++}
+diff --git a/src/platform/32x/main.cpp b/src/platform/32x/main.cpp
+index f273fac..2727b64 100644
+--- a/src/platform/32x/main.cpp
++++ b/src/platform/32x/main.cpp
+@@ -857,6 +857,10 @@ extern "C" void sec_dma1_handler()
+     SH2_DMA_CHCR1 = 0; // clear TE
+ }
+ 
++#if defined(CD32X) && defined(CD32X_CART_MB)
++#include "carttest.inc"            /* CART-1: CART=8 / CART=16 test builds only */
++#endif
++
+ int main()
+ {
+     while ((MARS_SYS_INTMSK & MARS_SH2_ACCESS_VDP) == 0);
+@@ -895,6 +899,9 @@ int main()
+     MARS_SYS_COMM2 = CD32X_TEXT;                   /* text on: status codes visible if a load fails */
+     cdCmd(CD_CMD_TEXT_ONOFF);
+ #endif
++#if defined(CD32X) && defined(CD32X_CART_MB)
++    cartTest();                                    /* CART-1: the 8 / 16 MB cart test, then the game */
++#endif
+ 
+     gameInit();
+ 

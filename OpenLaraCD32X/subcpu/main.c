@@ -105,6 +105,10 @@ static int ol_game_running = 0;   /* OL-2b: STATE 4B10 seen - no more per-pass t
 
 #define LEGACY_68K_CART 0
 
+#ifndef OL_CART_MB
+#define OL_CART_MB 0                     /* CART-1: 8 or 16 = cart test build (build.sh CART=8/16) */
+#endif
+
 static uint32_t saved_lba = 0;
 /* K10: length of the file opened by CMD 38, kept here (like saved_lba) so CMD 50 never has
    to trust COMM8 - in K9 CMD 50 read a wrong length from COMM8 and read 0 sectors. */
@@ -959,6 +963,26 @@ int main(void)
             do_md_cmd2(MD_CMD_WRITE_32X_16, 0xA1512C, ok);
             do_md_cmd2(MD_CMD_WRITE_32X_16, 0xA15120, 0);
         }
+#if OL_CART_MB
+        else if (cmd == 68) {
+            /* CART-1 (test builds only: CART=8 / CART=16 bash build.sh) - CMD 68 "cart page":
+               COMM2 = page 1-7 for window 1 (cart 2-4 MB) of the 16MB-PCB-CD32X.  The 68000
+               writes the page as ONE even byte to 0xA130F2 (the board latches /UWR, D8-D10)
+               with the existing listener routine 26 (safe_cart_xfer: interrupts off, RV = 1,
+               byte copy, RV = 0).  No listener change.  Window 0 (the program) is never paged.
+               Reply COMM12: 1 done, 0 refused.  docs: CD32X_SRAM_PAGING_PROPOSAL.md */
+            int page = do_md_cmd1(MD_CMD_READ_32X_16, 0xA15122) & 0xFFFF;
+            int ok = page >= 1 && page <= 7;
+            if (ok) {
+                PB(0) = (uint8_t)page;
+                switch_banks();                                   /* Word RAM -> 68000 */
+                cx(XM(0), 0xA130F2, 1);                           /* src, dst, 1 byte */
+                switch_banks();
+            }
+            do_md_cmd2(MD_CMD_WRITE_32X_16, 0xA1512C, ok);
+            do_md_cmd2(MD_CMD_WRITE_32X_16, 0xA15120, 0);
+        }
+#endif
         else if (cmd == 53) {
             /* K33 - CMD 53 "load sound effects": KOBOSFX.BIN -> PCM chip.  Reply in COMM12:
                number of effects (0 = failed). */

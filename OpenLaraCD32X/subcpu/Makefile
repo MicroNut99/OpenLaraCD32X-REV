@@ -16,6 +16,12 @@ INCPATH = -I. -I../../include -I$(ROOTDIR)/m68k-elf/include -I$(ROOTDIR)/m68k-el
 
 CCFLAGS = -m68000 -Wall -Ofast -c -fomit-frame-pointer
 HWFLAGS = -m68000 -Wall -O1 -c -fomit-frame-pointer
+# CART-1: make cd CART=8 / CART=16 - the cart test build (CMD 68 in main.c, which is built with
+# HWFLAGS).  Without CART: unchanged.
+ifdef CART
+CCFLAGS += -DOL_CART_MB=$(CART)
+HWFLAGS += -DOL_CART_MB=$(CART)
+endif
 LDFLAGS = -T $(LDSCRIPTSDIR)/cd.ld -Wl,-Map=output.map -nostdlib
 ASFLAGS = -m68000 --register-prefix-optional
 
