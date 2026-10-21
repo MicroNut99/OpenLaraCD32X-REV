@@ -1,0 +1,344 @@
+diff -ruN a/src/platform/32x/Makefile b/src/platform/32x/Makefile
+--- a/src/platform/32x/Makefile	2026-10-20 19:22:18.841006308 -0700
++++ b/src/platform/32x/Makefile	2026-10-20 19:58:04.818908823 -0700
+@@ -38,6 +38,13 @@
+ ifdef BENCH
+ SHCCFLAGS += -DCD32X_BENCH
+ endif
++# BENCH=1 SPLIT=1: the split line balances itself as in the game (timing, not pictures)
++ifdef SPLIT
++SHCCFLAGS += -DCD32X_BENCH_SPLIT
++endif
++ifdef BENCHLEVEL
++SHCCFLAGS += -DCD32X_BENCH_LEVEL=$(BENCHLEVEL)
++endif
+ 
+ # CART-1: make CD32X=1 CART=8 / CART=16 - the 8 / 16 MB cart test build (carttest.inc)
+ ifdef CART
+@@ -48,8 +55,8 @@
+ SHCCFLAGS += -DCD32X
+ # OPT-1: faster span loops (2-byte lightmap, 4 pixels per loop) - on by default; OPT=0 = v1.4's
+ ifneq ($(OPT),0)
+-SHCCFLAGS += -DCD32X_LMAP16
+-CPPDEFS += -DCD32X_LMAP16
++SHCCFLAGS += -DCD32X_LMAP16 -DCD32X_OPT
++CPPDEFS += -DCD32X_LMAP16 -DCD32X_OPT
+ endif
+ # OL-2: asm/*.s go through the C preprocessor with INCPATH only - so the define goes there
+ # too (asm/data.s leaves the levels out of the ROM in the CD32X build)
+diff -ruN a/src/platform/32x/asm/block_render.s b/src/platform/32x/asm/block_render.s
+--- a/src/platform/32x/asm/block_render.s	2026-10-20 19:22:18.714601384 -0700
++++ b/src/platform/32x/asm/block_render.s	2026-10-20 19:58:04.823247075 -0700
+@@ -28,12 +28,18 @@
+         .long   _gLightmap_base
+ #ifdef CD32X_LMAP16
+ var_LMAP16_ADDR:
+-        .long   _gLightmap16 + 256
++        .long   _gLightmap16 + 512
++var_LMAP16_G:                           /* OPT-2: the Gouraud loop's g -> address offset */
++        .long   _gLightmap16G
+ #endif
+ var_divTable:
+         .long   _divTable
+ var_mask:
+         .word   0xFF00
++#ifdef CD32X_LMAP16
++var_mask16:
++        .word   0xFE00
++#endif
+ var_frameWidth:
+         .word   FRAME_WIDTH
+ 
+diff -ruN a/src/platform/32x/asm/rasterizeFT.i b/src/platform/32x/asm/rasterizeFT.i
+--- a/src/platform/32x/asm/rasterizeFT.i	2026-10-20 19:22:18.734571310 -0700
++++ b/src/platform/32x/asm/rasterizeFT.i	2026-10-20 19:58:04.829932854 -0700
+@@ -81,7 +81,7 @@
+         add     #-SP_SIZE, sp
+ 
+ #ifdef CD32X_LMAP16
+-        // OPT-1: LMAP = gLightmap16 + 256 + (g << 9): 16-bit pixel pairs
++        // OPT-1: LMAP = gLightmap16 + 512 + (g << 9): 16-bit pixel pairs
+         mov.l   var_LMAP16_ADDR, LMAP
+         mov.b   @(VERTEX_G, L), tmp
+         shll8   tmp
+diff -ruN a/src/platform/32x/asm/rasterizeGT.i b/src/platform/32x/asm/rasterizeGT.i
+--- a/src/platform/32x/asm/rasterizeGT.i	2026-10-20 19:22:18.752746551 -0700
++++ b/src/platform/32x/asm/rasterizeGT.i	2026-10-20 19:58:04.834956702 -0700
+@@ -325,6 +325,16 @@
+ .block_prepare_gt:
+         shll    dtdx            // [delay slot] optional
+         shll    dgdx
++#ifdef CD32X_LMAP16
++        // OPT-2: g -> its address in the 2-byte table: gLightmap16 + 512 + 2 * (g - gLightmap_base)
++        // (the row = g & 0xFFFFFE00), and its step doubled; mask back to 0xFF00 at the scanline end
++        mov.l   var_LMAP16_G, tmp
++        mov.l   @tmp, tmp       // gLightmap16G = gLightmap16 + 512 - 2 * gLightmap_base
++        shll    g
++        add     tmp, g
++        shll    dgdx
++        mov.w   var_mask16, mask
++#endif
+ 
+ .block_2px_gt:
+ #ifdef CD32X_LMAP16
+@@ -337,13 +347,11 @@
+         getUV   t, index
+         mov.b   @(index, TILE), index
+         mov     g, LMAP
+-        and     mask, LMAP      // LMAP = (g & 0xFFFFFF00)
+-        mov.b   @(index, LMAP), index
++        and     mask, LMAP      // LMAP = the 2-byte table's row (g & 0xFFFFFE00)
++        add     index, index
++        mov.w   @(index, LMAP), index   // the pixel pair
+         sub     dgdx, g         // g -= dgdx
+-        extu.b  index, index
+-        swap.b  index, dup
+-        or      index, dup      // dup = index | (index << 8)
+-        mov.w   dup, @-Rptr
++        mov.w   index, @-Rptr
+         cmp/gt  Lptr, Rptr
+         bf/s    .scanline_end_gt
+         sub     dtdx, t         // [delay slot] t -= dtdx
+@@ -351,24 +359,20 @@
+         getUV   t, index
+         mov.b   @(index, TILE), index
+         mov     g, LMAP
+-        and     mask, LMAP      // LMAP = (g & 0xFFFFFF00)
+-        mov.b   @(index, LMAP), index
++        and     mask, LMAP      // LMAP = the 2-byte table's row (g & 0xFFFFFE00)
++        add     index, index
++        mov.w   @(index, LMAP), index   // the pixel pair
+         sub     dgdx, g         // g -= dgdx
+-        extu.b  index, index
+-        swap.b  index, dup
+-        or      index, dup      // dup = index | (index << 8)
+-        mov.w   dup, @-Rptr
++        mov.w   index, @-Rptr
+         sub     dtdx, t
+         getUV   t, index
+         mov.b   @(index, TILE), index
+         mov     g, LMAP
+-        and     mask, LMAP      // LMAP = (g & 0xFFFFFF00)
+-        mov.b   @(index, LMAP), index
++        and     mask, LMAP      // LMAP = the 2-byte table's row (g & 0xFFFFFE00)
++        add     index, index
++        mov.w   @(index, LMAP), index   // the pixel pair
+         sub     dgdx, g         // g -= dgdx
+-        extu.b  index, index
+-        swap.b  index, dup
+-        or      index, dup      // dup = index | (index << 8)
+-        mov.w   dup, @-Rptr
++        mov.w   index, @-Rptr
+         cmp/gt  Lptr, Rptr
+         bt/s    .block_4px_gt
+         sub     dtdx, t         // [delay slot] t -= dtdx
+@@ -393,6 +397,9 @@
+ #endif
+ 
+ .scanline_end_gt:
++#ifdef CD32X_LMAP16
++        mov.w   var_mask, mask  // OPT-2: back to the 1-byte table's mask (the edge pixels)
++#endif
+         mov.l   @sp+, Rg
+         mov.l   @sp+, Rt
+ .scanline_end_fast_gt:
+diff -ruN a/src/platform/32x/main.cpp b/src/platform/32x/main.cpp
+--- a/src/platform/32x/main.cpp	2026-10-20 19:22:18.845902704 -0700
++++ b/src/platform/32x/main.cpp	2026-10-20 20:15:52.698637195 -0700
+@@ -590,7 +590,8 @@
+ }
+ 
+ #ifdef CD32X
+-static int32 gCartLevel = -1;                      /* OL-2c: the level now in the cart */
++static int32 gCartLevel = -2;                      /* OL-2c: the level now in the cart (RESUME-1:
++                                                      -2 = not known yet: ask the cart's record) */
+ static int32 gGameLoop = 0;                        /* OL-2c: the game loop has started */
+ 
+ /* ---------------------------------------------------------------------------------------
+@@ -670,6 +671,66 @@
+     return (pad & abc) == abc;
+ }
+ 
++/* ---------------------------------------------------------------------------------------
++ * RESUME-1: the level slot (cart 2 MB) keeps its level without power too, so the first level
++ *   after power-on (Current Position, or a level from the passport) is not loaded from the CD
++ *   again when it is already there.  Same rules as Caves:
++ *     0x3F0310  'OLLV', level, file length, checksum, ~checksum   (written after a full load)
++ *   - checked once per power-on (gCartLevel -2): same level, same length as the file on this
++ *     disc, checksum of what is in the cart now matches -> no loading.  Anything else (a
++ *     movie or the cart test's load test used the slot, a half-finished load) -> the CD.
++ *   - A + B + C held: always load from the CD.
++ * --------------------------------------------------------------------------------------- */
++#define CS_SLOT               0x3F0310             /* record: after Caves', before the save */
++#define SLOT_MARK             0x4F4C4C56           /* 'OLLV' */
++
++static uint32 slotSum(int32 len)                   /* checksum of the level slot's contents */
++{
++    const uint32* p = (const uint32*)CD_LEVEL_CART;
++    uint32 s = SLOT_MARK;
++    int32 n = len >> 2;
++    for (int32 i = 0; i < n; i++)
++        s = ((s << 1) | (s >> 31)) + p[i];
++    const uint8* b = (const uint8*)CD_LEVEL_CART + (n << 2);
++    for (int32 i = 0; i < (len & 3); i++)
++        s = ((s << 1) | (s >> 31)) + b[i];
++    return s;
++}
++
++static bool slotInCart(int32 id)                   /* true = level id is complete in the slot */
++{
++    if (cartRead32(CS_SLOT) != SLOT_MARK || (int32)cartRead32(CS_SLOT + 4) != id)
++        return false;
++    MARS_SYS_COMM2 = (uint16)(CD_FILE_LEVEL_BASE + id);
++    cdCmd(CD_CMD_OPEN_FILE);                       /* only looks the file up: its length */
++    if (MARS_SYS_COMM0 != 0)
++        return false;
++    int32 len = (int32)CD_COMM8_32;
++    if (len <= 0 || (int32)cartRead32(CS_SLOT + 8) != len)
++        return false;
++    uint32 sum = cartRead32(CS_SLOT + 12);
++    if (cartRead32(CS_SLOT + 16) != ~sum)
++        return false;
++
++    CacheClear();                                  /* read what is really in the cart */
++    bool ok = (slotSum(len) == sum);
++    CacheClear();
++    return ok;
++}
++
++static void slotRecord(int32 id, int32 len)        /* the slot now holds level id, complete */
++{
++    uint32 sum = slotSum(len);                     /* caches already cleared by the caller */
++    cartWrite32(CS_SLOT, 0);
++    cartWrite32(CS_SLOT + 4, (uint32)id);
++    cartWrite32(CS_SLOT + 8, (uint32)len);
++    cartWrite32(CS_SLOT + 12, sum);
++    cartWrite32(CS_SLOT + 16, ~sum);
++    cartWrite32(CS_SLOT, SLOT_MARK);               /* marker last */
++    csEnd();
++    CacheClear();
++}
++
+ static const void* cavesLoad(LevelID id)
+ {
+     MARS_WAIT();                                   /* slave idle */
+@@ -731,6 +792,18 @@
+         return (const void*)CD_LEVEL_CART;
+     }
+ 
++    if (gCartLevel == -2)                          /* RESUME-1: first level since power-on */
++    {
++        gCartLevel = -1;
++        if (!cavesForced() && slotInCart(id))
++        {
++            gCartLevel = id;                       /* still there from the last session */
++            sfxLoad(id);
++            CD_STATE(0x4E14);                      /* level ready */
++            return (const void*)CD_LEVEL_CART;
++        }
++    }
++
+     MARS_SYS_COMM2 = 0;                            /* OL-4: music off - no CD data */
+     cdCmd(54);                                     /*       reads while it plays */
+     splashBegin();                                 /* OL-3: splash + progress bar */
+@@ -745,6 +818,7 @@
+     CacheClear();                                  /* master: forget the old level */
+     MARS_SYS_COMM4 = MARS_CMD_CACHE;               /* slave: the same */
+     MARS_WAIT();
++    slotRecord(id, res);                           /* RESUME-1: for the next power-on */
+     gSfxLevel = -1;                                /* CAVES-1: always for a new level */
+     sfxLoad(id);                                   /* OL-6: the level's sound effects */
+     CD_STATE(0x4E14);                              /* level ready */
+@@ -956,8 +1030,12 @@
+ #endif
+ #ifdef CD32X_BENCH
+     benchPaint();                                  /* BENCH-1: stack depth */
++#ifdef CD32X_BENCH_LEVEL
++    gLevelID = (LevelID)CD32X_BENCH_LEVEL;         /* BENCH-1: BENCHLEVEL=n picks another level */
++#else
+     gLevelID = LVL_TR1_1;                          /* BENCH-1: straight into Caves */
+ #endif
++#endif
+     gameInit();
+ #ifdef CD32X_BENCH
+     gSettings.video_fps = 0;                       /* BENCH-1: no fps counter in the pictures */
+diff -ruN a/src/platform/32x/render.cpp b/src/platform/32x/render.cpp
+--- a/src/platform/32x/render.cpp	2026-10-20 19:22:18.845699472 -0700
++++ b/src/platform/32x/render.cpp	2026-10-20 19:58:04.850861313 -0700
+@@ -698,9 +698,21 @@
+ 
+     const ColorIndex* tile = NULL;
+ 
++#ifdef CD32X_OPT
++    // OPT-2: most of the ordering table's slots are empty - skip them in a tight loop
++    Face** ot = gOT + OT_SIZE;
++    for (;;)
++    {
++        Face *face;
++        do {
++            if (ot == gOT) goto ot_done;
++            face = *--ot;
++        } while (!face);
++#else
+     for (int32 i = OT_SIZE - 1; i >= 0; i--)
+     {
+         Face *face = gOT[i];
++#endif
+ 
+         for (; face; face = face->next)
+         {
+@@ -802,6 +814,9 @@
+             }
+         }
+     }
++#ifdef CD32X_OPT
++ot_done:
++#endif
+ #ifdef CD32X_OVERLAP
+     if (bit)
+     {
+@@ -1107,7 +1122,7 @@
+         gSplitVote = 0;
+     }
+ 
+-#ifdef CD32X_BENCH
++#if defined(CD32X_BENCH) && !defined(CD32X_BENCH_SPLIT)
+     gSplitVote = 0;                                 // BENCH-1: the line stays put (pictures comparable)
+ #endif
+     if (gSplitVote >= 8) {
+@@ -1860,20 +1875,30 @@
+  * loop (asm/rasterizeFT.i): one 16-bit load gives the two screen pixels a texel covers, where
+  * the 8-bit table needed a load, a zero-extend, a byte swap and an OR.  Same indexing as the
+  * 8-bit table: the asm reads gLightmap_base + (g << 8) + (int8)texel; here
+- * gLightmap16 + 256 + (g << 9) + 2 * (int8)texel.  16 KB of SDRAM (.bss). */
+-extern "C" uint16 gLightmap16[256 * 32] __attribute__((aligned(16)));
+-uint16 gLightmap16[256 * 32] __attribute__((aligned(16)));
++ * gLightmap16 + 512 + (g << 9) + 2 * (int8)texel.  16.5 KB of SDRAM (.bss).
++ * OPT-2: 33 rows, g = 0..32 - the mesh shading gives 1..32 (transformMesh.i: clamp + 1), and
++ * row 32 is the 8-bit table's last 256 bytes (the asm's base is gLightmap - 128). */
++#define LMAP16_ROWS 33
++/* OPT-2: the rows start at gLightmap16 + 512, a multiple of 512 (the Gouraud loop finds its row
++ * with g & 0xFFFFFE00); the first 256 bytes are never read */
++extern "C" uint16 gLightmap16[256 * (LMAP16_ROWS + 1)] __attribute__((aligned(512)));
++uint16 gLightmap16[256 * (LMAP16_ROWS + 1)] __attribute__((aligned(512)));
++
++/* OPT-2: the Gouraud loop turns g (gLightmap_base + 8.8 light) into 2 * g + gLightmap16G */
++extern "C" uint32 gLightmap16G;
++uint32 gLightmap16G;
+ 
+ void lightmap16Build()
+ {
+     const uint8* base = (const uint8*)gLightmap - 128;     /* = gLightmap_base (crt0.s) */
+-    for (int32 g = 0; g < 32; g++)
++    gLightmap16G = uint32(intptr_t(gLightmap16) + 512 - 2 * intptr_t(base));
++    for (int32 g = 0; g < LMAP16_ROWS; g++)
+     {
+         for (int32 s = -128; s < 128; s++)
+         {
+             int32 ofs = (g << 8) + s;
+             uint32 v = (ofs >= 0) ? base[ofs] : 0;           /* g 0, texel >= 128: below the table */
+-            gLightmap16[(g << 8) + 128 + s] = uint16(v | (v << 8));
++            gLightmap16[(g << 8) + 256 + s] = uint16(v | (v << 8));
+         }
+     }
+ }

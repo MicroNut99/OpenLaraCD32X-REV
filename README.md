@@ -62,9 +62,14 @@ saves in the last 64 KB. `build.sh` refuses to build if the game or Caves would 
 
 ## 8 MB / 16 MB cart test builds
 For the 16MB-PCB-CD32X paged SRAM cart: `CART=8 bash build.sh` or `CART=16 bash build.sh` makes
-a test disc (`CDROMPlayer_cart8_music.cue` / `_cart16_`) that tests the cart's pages at start,
-then plays the game. `bash build.sh` without `CART` is unchanged. See `docs/CART_TEST.md` and
+a test disc (`CDROMPlayer_cart8_music.cue` / `_cart16_`) with a cart page test in the title's
+options (Detail → Cart Test). `bash build.sh` without `CART` is unchanged. See `docs/CART_TEST.md` and
 `docs/SRAM_8MB_16MB_DESIGN.md`.
+
+## Speed-ups and resume (OPT-1, OPT-2, RESUME-1)
+Faster texture span loops (5-9% less frame time in ares, pictures bit-identical to v1.4), and
+the last level is not loaded from the CD again after a power cycle when it is still in the
+cart (Current Position starts in seconds). Both are in every build. See `docs/OPT.md`.
 
 ## Controls (6-button pad)
 | Button | Action |

@@ -33,6 +33,10 @@ if ! grep -q "CD32X_LMAP16" "$ENGINE/asm/rasterizeFT.i"; then
   echo "==> applying engine/openlara-opt1.patch to OpenLara-src (OPT-1: faster span loops)"
   git -C "$ENGINE/../../.." apply "$HERE/../engine/openlara-opt1.patch"
 fi
+if ! grep -q "OPT-2" "$ENGINE/render.cpp"; then
+  echo "==> applying engine/openlara-opt2.patch to OpenLara-src (OPT-2: ordering table skip)"
+  git -C "$ENGINE/../../.." apply "$HERE/../engine/openlara-opt2.patch"
+fi
 if [ -n "$CART" ]; then echo "==> CART TEST BUILD: ${CART} MB"; fi
 
 echo "==> splash";    python3 "$HERE/tools/make_ol_splash.py" "$HERE/splash.jpg" "$ENGINE/data/SPLASH.BIN"
