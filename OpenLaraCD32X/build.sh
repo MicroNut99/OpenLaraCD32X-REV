@@ -20,12 +20,18 @@ if ! grep -q 'CD32X' "$ENGINE/main.cpp"; then
   echo "==> installing engine/main.cpp + Makefile into OpenLara-src (git keeps the old ones)"
   cp "$HERE/engine/main.cpp" "$HERE/engine/Makefile" "$ENGINE/"
 fi
-if [ -n "$CART" ] && [ ! -f "$ENGINE/carttest.inc" ]; then
+# the cart test patch is applied to every build (it does nothing without CART=), so the
+# speed-up patch below always finds the same engine
+if [ ! -f "$ENGINE/carttest.inc" ]; then
   echo "==> applying engine/openlara-cart-test.patch to OpenLara-src (the cart test)"
   git -C "$ENGINE/../../.." apply "$HERE/../engine/openlara-cart-test.patch"
-elif [ -n "$CART" ] && ! grep -q "CART-2" "$ENGINE/carttest.inc"; then
+elif ! grep -q "CART-2" "$ENGINE/carttest.inc"; then
   echo "==> updating the cart test in OpenLara-src (start-up -> options)"
   git -C "$ENGINE/../../.." apply "$HERE/../engine/openlara-cart-test-1to2.patch"
+fi
+if ! grep -q "CD32X_LMAP16" "$ENGINE/asm/rasterizeFT.i"; then
+  echo "==> applying engine/openlara-opt1.patch to OpenLara-src (OPT-1: faster span loops)"
+  git -C "$ENGINE/../../.." apply "$HERE/../engine/openlara-opt1.patch"
 fi
 if [ -n "$CART" ]; then echo "==> CART TEST BUILD: ${CART} MB"; fi
 

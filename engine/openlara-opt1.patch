@@ -1,0 +1,363 @@
+diff -ruN a/src/fixed/fmt/pkd.h b/src/fixed/fmt/pkd.h
+--- a/src/fixed/fmt/pkd.h	2026-10-20 18:27:00.878798120 -0700
++++ b/src/fixed/fmt/pkd.h	2026-10-20 18:27:01.804785468 -0700
+@@ -41,6 +41,10 @@
+     gBrightness = -128;
+     palSet(level.palette, gSettings.video_gamma << 4, gBrightness);
+     memcpy(gLightmap, level.lightmap, sizeof(gLightmap));
++#ifdef CD32X_LMAP16
++    extern void lightmap16Build();      // OPT-1: the textured span loop's pixel-pair table
++    lightmap16Build();
++#endif
+ #endif
+ 
+ #ifdef ROM_READ
+diff -ruN a/src/platform/32x/Makefile b/src/platform/32x/Makefile
+--- a/src/platform/32x/Makefile	2026-10-20 18:27:01.067002488 -0700
++++ b/src/platform/32x/Makefile	2026-10-20 18:27:01.822836843 -0700
+@@ -34,6 +34,10 @@
+ ifdef PROF
+ SHCCFLAGS += -DCD32X_PROF
+ endif
++# BENCH-1: make CD32X=1 BENCH=1 - the fixed benchmark (emulator measurements only)
++ifdef BENCH
++SHCCFLAGS += -DCD32X_BENCH
++endif
+ 
+ # CART-1: make CD32X=1 CART=8 / CART=16 - the 8 / 16 MB cart test build (carttest.inc)
+ ifdef CART
+@@ -42,6 +46,11 @@
+ 
+ ifdef CD32X
+ SHCCFLAGS += -DCD32X
++# OPT-1: faster span loops (2-byte lightmap, 4 pixels per loop) - on by default; OPT=0 = v1.4's
++ifneq ($(OPT),0)
++SHCCFLAGS += -DCD32X_LMAP16
++CPPDEFS += -DCD32X_LMAP16
++endif
+ # OL-2: asm/*.s go through the C preprocessor with INCPATH only - so the define goes there
+ # too (asm/data.s leaves the levels out of the ROM in the CD32X build)
+ CPPDEFS += -DCD32X
+diff -ruN a/src/platform/32x/asm/block_render.s b/src/platform/32x/asm/block_render.s
+--- a/src/platform/32x/asm/block_render.s	2026-10-20 18:27:01.067346162 -0700
++++ b/src/platform/32x/asm/block_render.s	2026-10-20 18:27:01.823140207 -0700
+@@ -26,6 +26,10 @@
+ .align 2
+ var_LMAP_ADDR:
+         .long   _gLightmap_base
++#ifdef CD32X_LMAP16
++var_LMAP16_ADDR:
++        .long   _gLightmap16 + 256
++#endif
+ var_divTable:
+         .long   _divTable
+ var_mask:
+diff -ruN a/src/platform/32x/asm/rasterizeFT.i b/src/platform/32x/asm/rasterizeFT.i
+--- a/src/platform/32x/asm/rasterizeFT.i	2026-10-20 18:27:01.068103065 -0700
++++ b/src/platform/32x/asm/rasterizeFT.i	2026-10-20 18:27:01.823687630 -0700
+@@ -80,10 +80,19 @@
+         mov.l   r14, @-sp
+         add     #-SP_SIZE, sp
+ 
++#ifdef CD32X_LMAP16
++        // OPT-1: LMAP = gLightmap16 + 256 + (g << 9): 16-bit pixel pairs
++        mov.l   var_LMAP16_ADDR, LMAP
++        mov.b   @(VERTEX_G, L), tmp
++        shll8   tmp
++        shll    tmp
++        add     tmp, LMAP
++#else
+         mov.l   var_LMAP_ADDR, LMAP
+         mov.b   @(VERTEX_G, L), tmp
+         shll8   tmp
+         or      tmp, LMAP
++#endif
+ 
+         mov.l   var_divTable, divLUT
+ 
+@@ -243,7 +252,12 @@
+ 
+         getUV   Lt, index
+         mov.b   @(index, TILE), index
++#ifdef CD32X_LMAP16
++        add     index, index
++        mov.w   @(index, LMAP), index
++#else
+         mov.b   @(index, LMAP), index
++#endif
+         mov.b   index, @Lptr
+         add     #1, Lptr
+ 
+@@ -257,7 +271,12 @@
+ 
+         getUV   t, index
+         mov.b   @(index, TILE), index
++#ifdef CD32X_LMAP16
++        add     index, index
++        mov.w   @(index, LMAP), index
++#else
+         mov.b   @(index, LMAP), index
++#endif
+         sub     dtdx, t
+         mov.b   index, @-Rptr
+ 
+@@ -270,6 +289,40 @@
+         nop
+ 
+ .block_2px_ft:
++#ifdef CD32X_LMAP16
++        // OPT-1: the 2-byte lightmap (one load = the pixel pair), no load-use stalls, and
++        // 4 pixels per loop (one compare and branch per 4): 22 cycles per 4 pixels, was 32
++        mov     Rptr, index
++        sub     Lptr, index
++        tst     #2, index       // an odd number of pixel pairs: the rightmost one first
++        bt      .block_4px_ft
++        getUV   t, index
++        mov.b   @(index, TILE), index
++        sub     dtdx, t         // t -= dtdx (fills the load slot)
++        add     index, index
++        mov.w   @(index, LMAP), index   // the pixel pair
++        add     #-2, Rptr       // (fills the load slot)
++        cmp/gt  Lptr, Rptr
++        bf/s    .scanline_end_ft
++        mov.w   index, @Rptr    // [delay slot]
++.block_4px_ft:
++        getUV   t, index
++        mov.b   @(index, TILE), index
++        sub     dtdx, t
++        add     index, index
++        mov.w   @(index, LMAP), index
++        add     #-4, Rptr
++        mov.w   index, @(2, Rptr)
++        getUV   t, index
++        mov.b   @(index, TILE), index
++        sub     dtdx, t
++        add     index, index
++        mov.w   @(index, LMAP), index
++        cmp/gt  Lptr, Rptr
++        bt/s    .block_4px_ft
++        mov.w   index, @Rptr    // [delay slot]
++        nop
++#else
+         getUV   t, index
+ 
+         mov.b   @(index, TILE), index
+@@ -284,6 +337,7 @@
+         bt/s    .block_2px_ft
+         sub     dtdx, t         // [delay slot] t -= dtdx
+         nop
++#endif
+ 
+ .scanline_end_ft:
+         mov.l   @(SP_LDX, sp), sLdx
+diff -ruN a/src/platform/32x/asm/rasterizeGT.i b/src/platform/32x/asm/rasterizeGT.i
+--- a/src/platform/32x/asm/rasterizeGT.i	2026-10-20 18:27:01.068306624 -0700
++++ b/src/platform/32x/asm/rasterizeGT.i	2026-10-20 18:27:01.823715846 -0700
+@@ -327,6 +327,52 @@
+         shll    dgdx
+ 
+ .block_2px_gt:
++#ifdef CD32X_LMAP16
++        // OPT-1: 4 pixels per loop (one compare and branch per 4), the rightmost pair alone
++        // first when the number of pairs is odd
++        mov     Rptr, index
++        sub     Lptr, index
++        tst     #2, index
++        bt      .block_4px_gt
++        getUV   t, index
++        mov.b   @(index, TILE), index
++        mov     g, LMAP
++        and     mask, LMAP      // LMAP = (g & 0xFFFFFF00)
++        mov.b   @(index, LMAP), index
++        sub     dgdx, g         // g -= dgdx
++        extu.b  index, index
++        swap.b  index, dup
++        or      index, dup      // dup = index | (index << 8)
++        mov.w   dup, @-Rptr
++        cmp/gt  Lptr, Rptr
++        bf/s    .scanline_end_gt
++        sub     dtdx, t         // [delay slot] t -= dtdx
++.block_4px_gt:
++        getUV   t, index
++        mov.b   @(index, TILE), index
++        mov     g, LMAP
++        and     mask, LMAP      // LMAP = (g & 0xFFFFFF00)
++        mov.b   @(index, LMAP), index
++        sub     dgdx, g         // g -= dgdx
++        extu.b  index, index
++        swap.b  index, dup
++        or      index, dup      // dup = index | (index << 8)
++        mov.w   dup, @-Rptr
++        sub     dtdx, t
++        getUV   t, index
++        mov.b   @(index, TILE), index
++        mov     g, LMAP
++        and     mask, LMAP      // LMAP = (g & 0xFFFFFF00)
++        mov.b   @(index, LMAP), index
++        sub     dgdx, g         // g -= dgdx
++        extu.b  index, index
++        swap.b  index, dup
++        or      index, dup      // dup = index | (index << 8)
++        mov.w   dup, @-Rptr
++        cmp/gt  Lptr, Rptr
++        bt/s    .block_4px_gt
++        sub     dtdx, t         // [delay slot] t -= dtdx
++#else
+         getUV   t, index
+ 
+         mov.b   @(index, TILE), index
+@@ -344,6 +390,7 @@
+         cmp/gt  Lptr, Rptr
+         bt/s    .block_2px_gt
+         sub     dtdx, t         // [delay slot] t -= dtdx
++#endif
+ 
+ .scanline_end_gt:
+         mov.l   @sp+, Rg
+diff -ruN a/src/platform/32x/bench.inc b/src/platform/32x/bench.inc
+--- a/src/platform/32x/bench.inc	1969-12-31 16:00:00.000000000 -0800
++++ b/src/platform/32x/bench.inc	2026-10-20 18:27:01.831751933 -0700
+@@ -0,0 +1,41 @@
++/* ---------------------------------------------------------------------------------------
++ * BENCH-1: a fixed, repeatable workload for measuring engine changes (make CD32X=1 BENCH=1,
++ *   emulator use only - never a release).  The game starts straight in Caves, the game logic
++ *   runs exactly one step per drawn frame (no frame skipping, no waiting for the screen
++ *   refresh), and the pad is scripted: still, turn left, run, turn right.  After BENCH_FRAMES
++ *   frames the last picture stays on screen and COMM12 = 0xBEEF.  Every build draws exactly
++ *   the same frames, so pictures can be compared bit for bit and the SH2 clocks spent in
++ *   the drawing code compared between builds.
++ * --------------------------------------------------------------------------------------- */
++#define BENCH_FRAMES 150
++static int32 gBenchFrame = 0;
++
++static uint16 benchPad()
++{
++    int32 f = gBenchFrame;
++    if (f < 30)  return 0;
++    if (f < 80)  return SEGA_CTRL_LEFT;
++    if (f < 110) return SEGA_CTRL_UP;
++    if (f < 130) return SEGA_CTRL_RIGHT;
++    return 0;
++}
++
++/* BENCH-1: how deep the master's stack goes.  At start the free SDRAM between the end of .bss
++   and the stack pointer is painted; at the end the unpainted part is the deepest use.  The free
++   bytes that were never touched go to COMM8 (shown by ares-headless as the 5th COMM word). */
++extern uint8 _end[];
++#define BENCH_PAINT 0x5AA5C33Cu
++static void benchPaint()
++{
++    uint32 sp;
++    __asm__ volatile ("mov r15,%0" : "=r"(sp));
++    for (uint32* p = (uint32*)(((uint32)_end + 3) & ~3); (uint32)p < sp - 256; p++) *p = BENCH_PAINT;
++}
++
++static void benchStackReport()
++{
++    uint32* p = (uint32*)(((uint32)_end + 3) & ~3);
++    uint32* start = p;
++    while (*p == BENCH_PAINT) p++;
++    MARS_SYS_COMM8 = (uint16)((uint32)(p - start) * 4 > 0xFFFF ? 0xFFFF : (p - start) * 4);
++}
+diff -ruN a/src/platform/32x/main.cpp b/src/platform/32x/main.cpp
+--- a/src/platform/32x/main.cpp	2026-10-20 18:27:01.318101911 -0700
++++ b/src/platform/32x/main.cpp	2026-10-20 18:27:01.827708650 -0700
+@@ -554,6 +554,10 @@
+     // nope
+ }
+ 
++#ifdef CD32X_BENCH
++#include "bench.inc"               /* BENCH-1: emulator measurements only */
++#endif
++
+ void updateInput()
+ {
+     keys = 0;
+@@ -563,6 +567,9 @@
+     cdCmd((uint16)(CD_CMD_GET_PAD | (sndTakePending() << 8)));   /* pad -> COMM8, OL-6: + sound effect */
+ #endif
+     uint16 mask = MARS_SYS_COMM8;
++#ifdef CD32X_BENCH
++    mask = benchPad();                             /* BENCH-1: the scripted pad */
++#endif
+     if (mask & SEGA_CTRL_UP)      keys |= IK_UP;
+     if (mask & SEGA_CTRL_RIGHT)   keys |= IK_RIGHT;
+     if (mask & SEGA_CTRL_DOWN)    keys |= IK_DOWN;
+@@ -947,7 +954,16 @@
+     MARS_SYS_COMM2 = CD32X_TEXT;                   /* text on: status codes visible if a load fails */
+     cdCmd(CD_CMD_TEXT_ONOFF);
+ #endif
++#ifdef CD32X_BENCH
++    benchPaint();                                  /* BENCH-1: stack depth */
++    gLevelID = LVL_TR1_1;                          /* BENCH-1: straight into Caves */
++#endif
+     gameInit();
++#ifdef CD32X_BENCH
++    gSettings.video_fps = 0;                       /* BENCH-1: no fps counter in the pictures */
++    gRandSeedLogic = 0x1234567;                    /* BENCH-1: startLevel seeds them from the clock */
++    gRandSeedDraw = 0x7654321;
++#endif
+ 
+ #ifdef CD32X
+     CD_STATE(0x4B10);                              /* game loop running: Sub-CPU goes quiet */
+@@ -987,6 +1003,19 @@
+         frame >>= 1;
+ 
+         int32 delta = frame - lastFrame;
++#ifdef CD32X_BENCH
++        if (gBenchFrame >= BENCH_FRAMES)           /* BENCH-1: done - keep the last picture */
++        {
++        #ifdef CD32X_OVERLAP
++            renderFinish();
++        #endif
++            benchStackReport();
++            CD_STATE(0xBEEF);
++            while (1) {}
++        }
++        delta = 1;                                 /* one logic step per drawn frame */
++        gBenchFrame++;
++#endif
+ 
+         if (!delta)
+             continue;
+diff -ruN a/src/platform/32x/render.cpp b/src/platform/32x/render.cpp
+--- a/src/platform/32x/render.cpp	2026-10-20 18:27:01.317388902 -0700
++++ b/src/platform/32x/render.cpp	2026-10-20 18:27:01.827163377 -0700
+@@ -1107,6 +1107,9 @@
+         gSplitVote = 0;
+     }
+ 
++#ifdef CD32X_BENCH
++    gSplitVote = 0;                                 // BENCH-1: the line stays put (pictures comparable)
++#endif
+     if (gSplitVote >= 8) {
+         if (gSplitY < SPLIT_MAX) gSplitY += 4;
+         gSplitVote = 0;
+@@ -1851,3 +1854,27 @@
+ //    return gBackgroundCopy;
+     return NULL;
+ }
++
++#ifdef CD32X_LMAP16
++/* OPT-1: gLightmap with every byte doubled into a 16-bit pixel pair, for the textured span
++ * loop (asm/rasterizeFT.i): one 16-bit load gives the two screen pixels a texel covers, where
++ * the 8-bit table needed a load, a zero-extend, a byte swap and an OR.  Same indexing as the
++ * 8-bit table: the asm reads gLightmap_base + (g << 8) + (int8)texel; here
++ * gLightmap16 + 256 + (g << 9) + 2 * (int8)texel.  16 KB of SDRAM (.bss). */
++extern "C" uint16 gLightmap16[256 * 32] __attribute__((aligned(16)));
++uint16 gLightmap16[256 * 32] __attribute__((aligned(16)));
++
++void lightmap16Build()
++{
++    const uint8* base = (const uint8*)gLightmap - 128;     /* = gLightmap_base (crt0.s) */
++    for (int32 g = 0; g < 32; g++)
++    {
++        for (int32 s = -128; s < 128; s++)
++        {
++            int32 ofs = (g << 8) + s;
++            uint32 v = (ofs >= 0) ? base[ofs] : 0;           /* g 0, texel >= 128: below the table */
++            gLightmap16[(g << 8) + 128 + s] = uint16(v | (v << 8));
++        }
++    }
++}
++#endif
