@@ -37,6 +37,10 @@ if ! grep -q "OPT-2" "$ENGINE/render.cpp"; then
   echo "==> applying engine/openlara-opt2.patch to OpenLara-src (OPT-2: ordering table skip)"
   git -C "$ENGINE/../../.." apply "$HERE/../engine/openlara-opt2.patch"
 fi
+if [ ! -f "$ENGINE/sfx.inc" ]; then
+  echo "==> applying engine/openlara-sfx.patch to OpenLara-src (SFX-1/2: all sound effects)"
+  git -C "$ENGINE/../../.." apply "$HERE/../engine/openlara-sfx.patch"
+fi
 if [ -n "$CART" ]; then echo "==> CART TEST BUILD: ${CART} MB"; fi
 
 echo "==> splash";    python3 "$HERE/tools/make_ol_splash.py" "$HERE/splash.jpg" "$ENGINE/data/SPLASH.BIN"
@@ -44,6 +48,8 @@ python3 "$HERE/tools/make_boot_image.py" "$ENGINE/data/SPLASH.BIN" "$HERE/subcpu
 echo "==> engine";      cd "$ENGINE" && rm -rf build && make CD32X=1 ${PROF:+PROF=1} ${CART:+CART=$CART}
 echo "==> ROM prep";    python3 "$HERE/tools/prep_openlara_cd.py" "$ENGINE/OpenLara.32x" "$HERE/subcpu/ROMS/OPENLARA.32X"
 echo "==> levels";      N=$(ls "$HERE"/gba/packer/out32x/*.PKD 2>/dev/null | wc -l); [ "$N" -ge 21 ] || { echo "*** only $N levels in gba/packer/out32x (21 expected) - stopping"; exit 1; }; cp "$HERE"/gba/packer/out32x/*.PKD "$HERE/subcpu/ROMS/"
+# SFX-2: every level's sound effects appended to its .PKD for the 32X PWM mixer (SFX=pcm: not)
+if [ "${SFX:-}" != "pcm" ]; then echo "==> sound banks"; python3 "$HERE/tools/sfx_bank.py" "$HERE/gba/packer/out32x" "$HERE/subcpu/ROMS"; fi
 echo "==> sound packs"; rm -f "$HERE"/subcpu/ROMS/SFX*.BIN; python3 "$HERE/tools/make_sfx_packs.py" "$HERE/gba/packer/out32x" "$HERE/subcpu/ROMS"
 echo "==> movies";      rm -f "$HERE"/subcpu/ROMS/*.ROQ   # FMV-1: movies that fit the level slot (1984 KB)
 for f in "$HERE"/fmv/*.ROQ; do

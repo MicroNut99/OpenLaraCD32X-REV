@@ -14,13 +14,17 @@ SFXnn.BIN = Kobo's KSFX pack (big-endian) + a sample map:
     after the image: u8 map[256] - engine sample index -> pack effect (0 = not in the pack)
 Why a selection: a level has far more sound than the chip's 64 KB.  Samples are taken in the
 order of the lowest sound id that uses them (Lara's own sounds have the lowest ids), at 8 kHz,
-each at most 1 s, until 31 effects or 64 KB are used."""
+each at most 1 s, until 31 effects or 64 KB are used.
+SFX-1: one sample per sound (a sound with variants - several footsteps, several hits - plays its
+first variant for all of them), 6 kHz, at most 0.75 s: about 26 sounds per level instead of 17.
+SFX-2 (sfx_bank.py) puts every sample of the level into the cart for the 32X PWM mixer; these
+packs are then the fallback (SFX=pcm, or a level without a bank)."""
 import io, os, struct, sys, wave
 
 LEVELS = ["TITLE", "GYM", "LEVEL1", "LEVEL2", "LEVEL3A", "LEVEL3B", "CUT1", "LEVEL4", "LEVEL5",
           "LEVEL6", "LEVEL7A", "LEVEL7B", "CUT2", "LEVEL8A", "LEVEL8B", "LEVEL8C", "LEVEL10A",
           "CUT3", "LEVEL10B", "CUT4", "LEVEL10C"]          # = enum LevelID order
-RATE, MAX_SECS, MAX_FX, RAM, PAGE, TAIL = 8000, 1.0, 31, 65536, 256, 16
+RATE, MAX_SECS, MAX_FX, RAM, PAGE, TAIL = 6000, 0.75, 31, 65536, 256, 16   # SFX-1
 
 def read_snd(path):
     d = open(path, "rb").read()
@@ -66,16 +70,16 @@ def sm8(v):
 
 def build(smap, infos, samples):
     order = []                                    # sample indices, most important first
+    variants = {}                                 # SFX-1: first variant -> the other variants
     for sid in range(256):
         a = smap[sid]
         if a < 0 or a >= len(infos):
             continue
         idx, vol, chance, flags = infos[a]
         count = max(1, (flags >> 2) & 15)
-        for k in range(count):
-            s = idx + k
-            if s < len(samples) and s < 255 and s not in [o[0] for o in order]:
-                order.append((s, vol))
+        if idx < len(samples) and idx < 255 and idx not in [o[0] for o in order]:
+            order.append((idx, vol))
+        variants.setdefault(idx, set()).update(idx + k for k in range(1, count) if idx + k < 255)
     image, table, smp_map = bytearray(), [], [0] * 256
     for s, vol in order:
         if len(table) >= MAX_FX:
@@ -97,6 +101,10 @@ def build(smap, infos, samples):
         image += bytes([0x80]) * TAIL + b"\xff"
         table.append((start // PAGE, min(255, max(32, vol >> 7)), int(round(RATE * 2048 / 32552)), loop, len(pcm)))
         smp_map[s] = len(table)
+    for s, more in variants.items():              # SFX-1: the variants play the first one
+        for v in more:
+            if smp_map[s] and not smp_map[v]:
+                smp_map[v] = smp_map[s]
     return image, table, smp_map
 
 def main():

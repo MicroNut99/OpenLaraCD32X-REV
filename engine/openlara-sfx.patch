@@ -1,0 +1,572 @@
+diff -ruN a/src/platform/32x/fmv.inc b/src/platform/32x/fmv.inc
+--- a/src/platform/32x/fmv.inc	2026-10-21 15:10:49.705646824 -0700
++++ b/src/platform/32x/fmv.inc	2026-10-21 15:10:49.707236665 -0700
+@@ -133,7 +133,14 @@
+     else
+         MARS_PWM_CYCLE = (((22801467 << 1) / RoQ_SAMPLE_RATE + 1) >> 1) + 1;
+     MARS_PWM_CTRL = 0x0185;                     /* L/R on, DREQ every PWM cycle (Vic's values) */
+-    fmvPwmRamp(1, FMV_CENTER, 86);              /* about 2 s, like Vic's Mars_InitPWM */
++    if (gSfxPwmLast > 1)                        /* SFX-2: already on (the effects' silence) */
++    {
++        while (MARS_PWM_MONO & 0x8000) {}
++        MARS_PWM_MONO = (uint16)FMV_CENTER;     /* the same duty at the movie's cycle */
++    }
++    else
++        fmvPwmRamp(1, FMV_CENTER, 86);          /* about 2 s, like Vic's Mars_InitPWM */
++    gSfxPwmLast = FMV_CENTER;
+ }
+ 
+ static void fmvAudio()                          /* slave: MARS_CMD_FMV_AUDIO */
+@@ -172,6 +179,7 @@
+     int32 last = FMV_PWM(a.val);
+     if (last > FMV_CENTER * 2) last = FMV_CENTER * 2;
+     fmvPwmRamp(last, 1, 4);
++    gSfxPwmLast = 1;                            /* SFX-2: the effects ramp up again */
+ }
+ 
+ /* ---------------------------------------------------------------------------- the master */
+@@ -273,7 +281,7 @@
+ 
+ /* plays movie n (0 CORE, 1 MANSION, 2 CAFE, 3 SNOW, 4 LIFT, 5 VISION, 6 CANYON, 7 PYRAMID,
+    8 PRISON, 9 ESCAPE, 10 END); false = not played (not on the disc / too big / no memory) */
+-bool osPlayVideo(int32 n)
++static bool fmvPlay(int32 n)
+ {
+ #ifdef CD32X_OVERLAP
+     renderFinish();                             /* the slave's last frame */
+@@ -409,3 +417,11 @@
+     CacheClear();
+     return true;
+ }
++
++bool osPlayVideo(int32 n)                       /* SFX-2: the effects stop while a movie plays */
++{
++    sfxBankStop();
++    bool ok = fmvPlay(n);
++    sfxBankStart();
++    return ok;
++}
+diff -ruN a/src/platform/32x/main.cpp b/src/platform/32x/main.cpp
+--- a/src/platform/32x/main.cpp	2026-10-21 15:10:49.708980098 -0700
++++ b/src/platform/32x/main.cpp	2026-10-21 15:10:49.710653356 -0700
+@@ -19,8 +19,8 @@
+ #define CD_CMD_GET_PAD      48      /* reply: pad 1 bits (SEGA_CTRL_*) in COMM8 */
+ #define CD_CMD_TEXT_ONOFF   52      /* COMM2 = 1 on / 0 off - Genesis display */
+ #define CD_CMD_SFX_LOAD     53      /* OL-6: COMM2 = level -> SFX<level>.BIN into the PCM chip */
+-int32 sndTakePending();             /* OL-6: sound.cpp - this frame's sound effect (0 = none) */
+-int32 sndPendingVolume();           /* SFXVOL-1: sound.cpp - its volume 1-64 (0 = none) */
++int32 sndTakeNext(int32* volume);   /* OL-6/SFX-1: sound.cpp - the next effect of this frame
++                                       (0 = none) and its volume 1-64 */
+ 
+ static void cdPause()               /* hardware rule: never hammer a COMM register */
+ {
+@@ -563,10 +563,19 @@
+     keys = 0;
+ 
+ #ifdef CD32X
+-    MARS_SYS_COMM2 = (uint16)sndPendingVolume();   /* SFXVOL-1: volume, read with the command */
+-    cdCmd((uint16)(CD_CMD_GET_PAD | (sndTakePending() << 8)));   /* pad -> COMM8, OL-6: + sound effect */
++    int32 sfxVol;
++    int32 sfx = sndTakeNext(&sfxVol);
++    MARS_SYS_COMM2 = (uint16)sfxVol;               /* SFXVOL-1: volume, read with the command */
++    cdCmd((uint16)(CD_CMD_GET_PAD | (sfx << 8)));  /* pad -> COMM8, OL-6: + sound effect */
+ #endif
+     uint16 mask = MARS_SYS_COMM8;
++#ifdef CD32X
++    while ((sfx = sndTakeNext(&sfxVol)) != 0)      /* SFX-1: the frame's other effects */
++    {
++        MARS_SYS_COMM2 = (uint16)sfxVol;
++        cdCmd((uint16)(CD_CMD_GET_PAD | (sfx << 8)));
++    }
++#endif
+ #ifdef CD32X_BENCH
+     mask = benchPad();                             /* BENCH-1: the scripted pad */
+ #endif
+@@ -900,7 +909,11 @@
+ #endif
+ 
+ #ifdef CD32X
++static int32 gSfxPwmLast = 0;      /* SFX-2: the slave's last PWM value (0/1 = off) */
++void sfxBankStart();
++void sfxBankStop();
+ #include "fmv.inc"                  /* FMV-1: the movie player (osPlayVideo, fmvAudio) */
++#include "sfx.inc"                  /* SFX-2: the sound effects through the 32X PWM */
+ #endif
+ 
+ extern "C" void pri_vbi_handler()
+@@ -927,6 +940,15 @@
+ 
+     SH2_DMA_VCR1 = 66;  // set exception vector for DMA channel 1
+     SH2_INT_IPRA = (SH2_INT_IPRA & 0xF0FF) | 0x0400;    // set DMA INT to priority 4
++#ifdef CD32X
++    {   /* SFX-2: let the DMA interrupt (priority 4) in - interrupt level 3 (crt0.s: 13).  The
++           slave's 32X interrupts stay off (INTMSK 0) and no other on-chip unit has a priority */
++        uint32 sr;
++        __asm__ volatile ("stc sr, %0" : "=r"(sr));
++        sr = (sr & ~0xF0u) | 0x30u;
++        __asm__ volatile ("ldc %0, sr" : : "r"(sr));
++    }
++#endif
+ 
+     while (1)
+     {
+@@ -973,6 +995,12 @@
+             case MARS_CMD_FMV_PWM:          /* FMV-1: PWM on (while a movie loads) */
+                 fmvPwmOn();
+                 break;
++            case MARS_CMD_SFX_START:        /* SFX-2: the level's effects through the PWM */
++                sfxStart();
++                break;
++            case MARS_CMD_SFX_STOP:
++                sfxStop();
++                break;
+ #endif
+         }
+ 
+@@ -984,6 +1012,9 @@
+ {
+     SH2_DMA_CHCR1; // read TE
+     SH2_DMA_CHCR1 = 0; // clear TE
++#ifdef CD32X
++    sfxIrq();                       /* SFX-2: the next block to the PWM, mix the ended one */
++#endif
+ }
+ 
+ #if defined(CD32X) && defined(CD32X_CART_MB)
+diff -ruN a/src/platform/32x/sfx.inc b/src/platform/32x/sfx.inc
+--- a/src/platform/32x/sfx.inc	1969-12-31 16:00:00.000000000 -0800
++++ b/src/platform/32x/sfx.inc	2026-10-21 15:10:49.715215870 -0700
+@@ -0,0 +1,325 @@
++/* ---------------------------------------------------------------------------------------
++ * SFX-2: every sound effect of the level through the 32X PWM (included by main.cpp after
++ *   fmv.inc, CD32X build only).
++ *
++ *   The samples: tools/sfx_bank.py appends a bank to each level file (.PKD) and points the
++ *   level header's soundData / soundOffsets at it, so the bank is loaded into the cart with
++ *   the level by the normal level load - no new Sub-CPU command, no change to the boot stack.
++ *     soundData:    'SFXB' u16 rate u16 count, then records: u32 length + signed 8-bit PCM
++ *     soundOffsets: s32[count], each record relative to soundData (-1 = none)
++ *   A level file without a bank (an older disc) keeps the Sega CD PCM packs (SFX-1).
++ *
++ *   The mixer runs on the SLAVE, in the DMA 1 interrupt (sec_dma1_handler, crt0.s level 4):
++ *   DMA 1 feeds the PWM (mono) from one of two blocks, paced by the PWM's requests; when a
++ *   block ends the other one starts and the ended one is mixed again.  The slave now runs
++ *   with interrupt level 3 (was 13), so only the DMA interrupt (priority 4) gets through:
++ *   the slave's 32X interrupts stay off (INTMSK 0) and no other on-chip unit is enabled.
++ *   - Mixing rate = the bank's rate (5000-8000 Hz), each mixed sample written mul times
++ *     so the PWM runs at 20-24 kHz (no audible carrier).  Blocks of up to 316 words: the
++ *     movie player's buffers (gFmvSnd), never used at the same time.
++ *   - Samples are read cache-through from the cart (the slave's cache stays the renderer's).
++ *   - 8 channels.  The engine's modes as on the GBA: UNIQUE = a sample already playing only
++ *     gets the new volume, REPLAY = it restarts, others = a new channel.  A full mixer drops
++ *     the quietest channel for a louder sound.
++ *   - The master never touches the mixer's state: requests go through a ring of 32 words
++ *     (cache-through), read at the start of every block.
++ * --------------------------------------------------------------------------------------- */
++#define MARS_CMD_SFX_START  0x7A5E              /* slave: mix the bank in gSfxData... */
++#define MARS_CMD_SFX_STOP   0x7A5F              /* slave: DMA off, the PWM stays at silence */
++#define SFX_CHANNELS        8
++#define SFX_QUEUE           32
++#define SFX_SHIFT           3                   /* volume: as loud as the Sega CD PCM effects (emulation) */
++#define SFX_SHARED(v)       (*(volatile __typeof__(v) *)((uint32)&(v) | 0x20000000))
++#define SFX_THROUGH(p)      ((const uint8*)((uint32)(p) | 0x20000000))
++#define SFX_OP_PLAY         1u
++#define SFX_OP_STOP         2u
++#define SFX_OP_STOPALL      3u
++
++/* shared: written by the master (cache-through), read by the slave (cache-through) */
++static const uint8* gSfxData;                   /* the bank, cache-through address */
++static const uint8* gSfxOffsets;                /* s32[count], cache-through address */
++static int32 gSfxCount;
++static int32 gSfxRate;
++static uint32 gSfxQueue[SFX_QUEUE];
++static int32 gSfxHead;                          /* the master's */
++static int32 gSfxTail;                          /* the slave's */
++static int32 gSfxOn = 0;                        /* master: the mixer runs */
++
++/* ------------------------------------------------------------------------------ the slave */
++struct SfxChan
++{
++    const uint8* p;                             /* the sample, cache-through; NULL = free */
++    uint32 pos;                                 /* 16.16 */
++    uint32 end;                                 /* length << 16 */
++    uint32 inc;
++    int32 vol;                                  /* 0..64 */
++    int32 index;
++};
++static SfxChan gSfxChan[SFX_CHANNELS];
++static int16 gSfxAcc[160];                      /* one block before the PWM conversion */
++static int32 gSfxRun = 0;                       /* slave: DMA running */
++static int32 gSfxPlaying;                       /* the block the DMA plays */
++static int32 gSfxMul, gSfxN, gSfxCenter, gSfxMax;
++static const uint8* gSfxBank;                   /* slave copies of the shared bank */
++static const uint8* gSfxTable;
++static int32 gSfxBankCount;
++
++static inline uint32 sfxRead32(const uint8* p)  /* cache-through, 2-byte aligned */
++{
++    const volatile uint16* w = (const volatile uint16*)p;
++    return ((uint32)w[0] << 16) | w[1];
++}
++
++static void sfxRequest(uint32 r)
++{
++    uint32 op = r >> 30;
++    if (op == SFX_OP_STOPALL)
++    {
++        for (int32 i = 0; i < SFX_CHANNELS; i++)
++            gSfxChan[i].p = NULL;
++        return;
++    }
++    int32 index = int32(r & 0xFF);
++    if (op == SFX_OP_STOP)
++    {
++        for (int32 i = 0; i < SFX_CHANNELS; i++)
++            if (gSfxChan[i].p && gSfxChan[i].index == index)
++                gSfxChan[i].p = NULL;
++        return;
++    }
++    if (index >= gSfxBankCount)
++        return;
++    int32 ofs = int32(sfxRead32(gSfxTable + index * 4));
++    if (ofs < 0)
++        return;
++    const uint8* rec = gSfxBank + ofs;
++    uint32 len = sfxRead32(rec);
++    if (!len)
++        return;
++    int32 vol = int32((r >> 8) & 0x7F);
++    uint32 inc = ((r >> 16) & 0xFF) << 9;       /* pitch 128 = 1.0 */
++    int32 mode = int32((r >> 28) & 3);
++
++    if (mode == UNIQUE || mode == REPLAY)
++    {
++        for (int32 i = 0; i < SFX_CHANNELS; i++)
++        {
++            SfxChan &c = gSfxChan[i];
++            if (c.p && c.index == index)
++            {
++                c.vol = vol;
++                c.inc = inc;
++                if (mode == REPLAY)
++                    c.pos = 0;
++                return;
++            }
++        }
++    }
++
++    SfxChan* best = NULL;                       /* a free channel, or the quietest */
++    for (int32 i = 0; i < SFX_CHANNELS; i++)
++    {
++        SfxChan* c = gSfxChan + i;
++        if (!c->p) { best = c; break; }
++        if (!best || c->vol < best->vol)
++            best = c;
++    }
++    if (best->p && best->vol > vol)
++        return;
++    best->p = rec + 4;
++    best->pos = 0;
++    best->end = len << 16;
++    best->inc = inc;
++    best->vol = vol;
++    best->index = index;
++}
++
++static void sfxFill(int32 b)                    /* mix block b */
++{
++    int32 tail = gSfxTail;
++    int32 head = SFX_SHARED(gSfxHead);
++    while (tail != head)
++    {
++        sfxRequest(SFX_SHARED(gSfxQueue[tail]));
++        tail = (tail + 1) & (SFX_QUEUE - 1);
++    }
++    gSfxTail = tail;
++    SFX_SHARED(gSfxTail) = tail;
++
++    const int32 n = gSfxN;
++    int16* acc = gSfxAcc;
++    for (int32 i = 0; i < n; i++)
++        acc[i] = 0;
++
++    for (int32 k = 0; k < SFX_CHANNELS; k++)
++    {
++        SfxChan &c = gSfxChan[k];
++        if (!c.p)
++            continue;
++        const int8* p = (const int8*)c.p;
++        uint32 pos = c.pos, inc = c.inc, end = c.end;
++        int32 vol = c.vol;
++        int32 i = 0;
++        for (; i < n && pos < end; i++)
++        {
++            acc[i] += int16((p[pos >> 16] * vol) >> 3);
++            pos += inc;
++        }
++        c.pos = pos;
++        if (pos >= end)
++            c.p = NULL;
++    }
++
++    uint16* out = (uint16*)((uint32)gFmvSnd[b] | 0x20000000);
++    const int32 mul = gSfxMul, center = gSfxCenter, max = gSfxMax;
++    for (int32 i = 0; i < n; i++)
++    {
++        int32 v = acc[i] >> SFX_SHIFT;          /* one sample at full volume: +-127 */
++        if (v > max) v = max; else if (v < -max) v = -max;
++        uint16 w = uint16(center + v);
++        for (int32 j = 0; j < mul; j++)
++            *out++ = w;
++    }
++}
++
++static void sfxDma(int32 b)                     /* DMA 1 -> PWM mono, interrupt at the end */
++{
++    SH2_DMA_CHCR1 = 0;
++    SH2_DMA_SAR1 = (uint32)gFmvSnd[b] | 0x20000000;
++    SH2_DMA_DAR1 = (uint32)&MARS_PWM_MONO;
++    SH2_DMA_TCR1 = gSfxN * gSfxMul;
++    SH2_DMA_CHCR1 = 0x14e5;                     /* as the movies' (fmvAudioStart) + IE */
++}
++
++static void sfxIrq()                            /* slave, DMA 1 end */
++{
++    if (!gSfxRun)
++        return;
++    int32 ended = gSfxPlaying;
++    gSfxPlaying ^= 1;
++    sfxDma(gSfxPlaying);
++    sfxFill(ended);
++}
++
++static void sfxStart()                          /* slave: MARS_CMD_SFX_START */
++{
++    gSfxRun = 0;
++    SH2_DMA_CHCR1 = 0;
++    gSfxBank = SFX_SHARED(gSfxData);
++    gSfxTable = SFX_SHARED(gSfxOffsets);
++    gSfxBankCount = SFX_SHARED(gSfxCount);
++    int32 rate = SFX_SHARED(gSfxRate);
++    gSfxMul = (20000 + rate - 1) / rate;        /* PWM at 20-24 kHz */
++    gSfxN = 316 / gSfxMul;
++    if (gSfxN > 160) gSfxN = 160;
++    int32 clock = (MARS_VDP_DISPMODE & MARS_NTSC_FORMAT) ? 23011361 : 22801467;
++    int32 cycle = (((clock << 1) / (rate * gSfxMul) + 1) >> 1) + 1;
++    gSfxCenter = cycle >> 1;
++    gSfxMax = gSfxCenter - 2;
++
++    for (int32 i = 0; i < SFX_CHANNELS; i++)
++        gSfxChan[i].p = NULL;
++    gSfxTail = SFX_SHARED(gSfxTail);
++
++    MARS_PWM_CYCLE = cycle;
++    if (gSfxPwmLast <= 1)                       /* PWM off (start, or after a movie) */
++    {
++        MARS_PWM_CTRL = 0x0185;
++        fmvPwmRamp(1, gSfxCenter, 16);          /* slowly to silence: no click */
++    }
++    else
++    {
++        while (MARS_PWM_MONO & 0x8000) {}       /* the same duty (half) at the new cycle */
++        MARS_PWM_MONO = (uint16)gSfxCenter;
++    }
++    gSfxPwmLast = gSfxCenter;
++
++    sfxFill(0);
++    sfxFill(1);
++    gSfxPlaying = 0;
++    gSfxRun = 1;
++    sfxDma(0);
++}
++
++static void sfxStop()                           /* slave: MARS_CMD_SFX_STOP */
++{
++    gSfxRun = 0;
++    SH2_DMA_CHCR1 = 0;                          /* the PWM keeps its last value: silence */
++}
++
++/* ----------------------------------------------------------------------------- the master */
++void sfxBankStop()                              /* before a level load or a movie */
++{
++    if (!gSfxOn)
++        return;
++    MARS_WAIT();
++    MARS_SYS_COMM4 = MARS_CMD_SFX_STOP;
++    MARS_WAIT();
++    gSfxOn = 0;
++}
++
++void sfxBankStart()                             /* after a level load: its bank, if it has one */
++{
++    sfxBankStop();
++    uint32 d = (uint32)level.soundData;
++    uint32 o = (uint32)level.soundOffsets;
++    int32 n = level.soundOffsetsCount;
++    if (n <= 0 || n > 255 || (d & 3) || (o & 3) ||
++        d < 0x02000000 || d >= 0x02400000 || o < 0x02000000 || o >= 0x02400000)
++        return;                                 /* no bank: the Sega CD PCM packs play */
++    const uint8* bank = SFX_THROUGH(d);
++    if (sfxRead32(bank) != 0x53465842)          /* 'SFXB' */
++        return;
++    uint32 rn = sfxRead32(bank + 4);
++    int32 rate = int32(rn >> 16);
++    if (rate < 4000 || rate > 11025 || int32(rn & 0xFFFF) != n)
++        return;
++
++    SFX_SHARED(gSfxData) = bank;
++    SFX_SHARED(gSfxOffsets) = SFX_THROUGH(o);
++    SFX_SHARED(gSfxCount) = n;
++    SFX_SHARED(gSfxRate) = rate;
++    SFX_SHARED(gSfxHead) = 0;
++    SFX_SHARED(gSfxTail) = 0;
++    gSfxHead = 0;
++    MARS_WAIT();
++    MARS_SYS_COMM4 = MARS_CMD_SFX_START;
++    MARS_WAIT();
++    gSfxOn = 1;
++}
++
++static void sfxPush(uint32 r)
++{
++    int32 head = gSfxHead;
++    int32 next = (head + 1) & (SFX_QUEUE - 1);
++    if (next == SFX_SHARED(gSfxTail))
++        return;                                 /* full: dropped */
++    SFX_SHARED(gSfxQueue[head]) = r;
++    SFX_SHARED(gSfxHead) = next;
++    gSfxHead = next;
++}
++
++bool sfxPlay(int32 index, int32 volume, int32 pitch, int32 mode)   /* false = no bank */
++{
++    if (!gSfxOn)
++        return false;
++    if (index < 0 || index > 255 || volume <= 0)
++        return true;
++    if (volume > 64) volume = 64;
++    if (pitch < 1) pitch = 1; else if (pitch > 255) pitch = 255;
++    sfxPush((SFX_OP_PLAY << 30) | (uint32(mode & 3) << 28) | (uint32(pitch) << 16) |
++            (uint32(volume) << 8) | uint32(index));
++    return true;
++}
++
++void sfxStopSample(int32 index)
++{
++    if (gSfxOn && index >= 0 && index <= 255)
++        sfxPush((SFX_OP_STOP << 30) | uint32(index));
++}
++
++void sfxStopAll()
++{
++    if (gSfxOn)
++        sfxPush(SFX_OP_STOPALL << 30);
++}
+diff -ruN a/src/platform/32x/sound.cpp b/src/platform/32x/sound.cpp
+--- a/src/platform/32x/sound.cpp	2026-10-21 15:10:49.712240820 -0700
++++ b/src/platform/32x/sound.cpp	2026-10-21 15:10:49.713800473 -0700
+@@ -31,37 +31,72 @@
+ }
+ 
+ void sndInit() {}
+-void sndInitSamples() {}
+-void sndFreeSamples() {}
+-/* OL-6: one sound effect per frame goes to the Sub-CPU with the pad request (the loudest);
+-   the number is the engine's sample index + 1, the Sub-CPU maps it to the level's PCM pack */
+-static int32 sndPending = 0;
+-static int32 sndPendingVol = 0;
++/* SFX-2: main.cpp sfx.inc - the level's sound bank through the 32X PWM */
++void sfxBankStart();
++void sfxBankStop();
++bool sfxPlay(int32 index, int32 volume, int32 pitch, int32 mode);
++void sfxStopSample(int32 index);
++void sfxStopAll();
++void sndInitSamples() { sfxBankStart(); }      /* SFX-2: a new level is loaded */
++void sndFreeSamples() { sfxBankStop(); }       /* SFX-2: before the level load */
++/* OL-6: the sound effects of a frame go to the Sub-CPU with the pad request; the number is
++   the engine's sample index + 1, the Sub-CPU maps it to the level's PCM pack.
++   SFX-1: up to 3 per frame (the loudest; was 1): main.cpp sends the first with the pad
++   request and the others with one more command 48 each.
++   SFX-2: a level with a sound bank plays every effect through the 32X PWM instead (sfx.inc) */
++#define SND_PENDING_MAX 3
++static int32 sndPending[SND_PENDING_MAX];       /* sample index + 1 */
++static int32 sndPendingVol[SND_PENDING_MAX];
++static int32 sndPendingCount = 0;
+ 
+ void* sndPlaySample(int32 index, int32 volume, int32 pitch, int32 mode)
+ {
+     if (index < 0 || index > 253)
+         return NULL;
+-    if (!sndPending || volume > sndPendingVol)
++    if (sfxPlay(index, volume, pitch, mode))    /* SFX-2: through the PWM */
++        return NULL;
++    int32 id = index + 1;
++    int32 quiet = 0;
++    for (int32 i = 0; i < sndPendingCount; i++)
+     {
+-        sndPending = index + 1;
+-        sndPendingVol = volume;
++        if (sndPending[i] == id)                /* the same effect twice: the louder */
++        {
++            if (volume > sndPendingVol[i])
++                sndPendingVol[i] = volume;
++            return NULL;
++        }
++        if (sndPendingVol[i] < sndPendingVol[quiet])
++            quiet = i;
+     }
++    if (sndPendingCount < SND_PENDING_MAX)
++        quiet = sndPendingCount++;
++    else if (volume <= sndPendingVol[quiet])
++        return NULL;
++    sndPending[quiet] = id;
++    sndPendingVol[quiet] = volume;
+     return NULL;
+ }
+ 
+-/* SFXVOL-1: the pending effect's volume (1-64, 64 = full; soundPlay() already lowers it
+-   with the distance to the camera).  main.cpp sends it in COMM2 with the pad request. */
+-int32 sndPendingVolume()
++/* SFXVOL-1: the effect's volume (1-64, 64 = full; soundPlay() already lowers it with the
++   distance to the camera).  main.cpp sends it in COMM2 with the command.
++   SFX-1: the next pending effect (the loudest first), 0 = none */
++int32 sndTakeNext(int32* volume)
+ {
+-    return sndPending ? X_CLAMP(sndPendingVol, 1, 64) : 0;
+-}
+-
+-int32 sndTakePending()
+-{
+-    int32 p = sndPending;
+-    sndPending = 0;
+-    return p;
++    if (!sndPendingCount)
++    {
++        *volume = 0;
++        return 0;
++    }
++    int32 best = 0;
++    for (int32 i = 1; i < sndPendingCount; i++)
++        if (sndPendingVol[i] > sndPendingVol[best])
++            best = i;
++    int32 id = sndPending[best];
++    *volume = X_CLAMP(sndPendingVol[best], 1, 64);
++    sndPendingCount--;
++    sndPending[best] = sndPending[sndPendingCount];
++    sndPendingVol[best] = sndPendingVol[sndPendingCount];
++    return id;
+ }
+ 
+ /* OL-10: what the SH2 started (the engine asks "still playing?" every frame) */
+@@ -145,8 +180,9 @@
+     return false;
+ }
+ 
+-void sndStopSample(int32 index) {}
+-void sndStop() { sndCutLevel = -1; }   /* OL-8: effects only - the CD music keeps playing;
++void sndStopSample(int32 index) { sfxStopSample(index); }
++void sndStop() { sndCutLevel = -1; sndPendingCount = 0; sfxStopAll(); }
++                                        /* OL-8: effects only - the CD music keeps playing;
+                                            CUTAUDIO-1: a level starts - its sound may play */
+ void sndFill(uint8* buffer, int32 count) {}
+ 
