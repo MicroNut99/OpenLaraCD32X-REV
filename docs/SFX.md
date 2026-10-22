@@ -24,8 +24,9 @@ effect of each frame was sent to the Sega CD.
   - The slave runs at interrupt level 3 instead of 13. Only the DMA interrupt (priority 4) gets
     through: the slave's 32X interrupts stay off.
 - **Movies:** the mixer stops while a movie plays, and starts again afterwards.
-- **Volume:** set by `SFX_SHIFT` in `sfx.inc`. It is matched to the PCM effects' level in emulation,
-  not yet on the console.
+- **Volume (SFX-3):** `SFX_GAIN` in `sfx.inc`, out of 16. The first build used 2, which was too
+  faint on the console; it is now 7, about 3.5 times louder. A sound at full volume reaches ±444 of the
+  PWM's ±478; several loud sounds together are clipped. To change it, edit this one number.
 
 ## SFX-1: the Sega CD PCM path (the fallback)
 - Up to **3 effects per frame**, the loudest first.
@@ -60,3 +61,11 @@ Checked:
 ## Build
 `bash build.sh` (or `CART=16 bash build.sh`). The new step `==> sound banks` lists each level's
 rate and size. `SFX=pcm bash build.sh` builds without banks.
+
+## MUSIC-1: the Music switch in the options
+Options → Sound → Music now switches the CD audio off and on. Before, the switch was saved but did
+nothing in this port.
+- **Off:** what is playing stops, and no track starts.
+- **On:** the level's music starts again.
+- **This covers all CD audio**, including the cut-scenes' voices, which are CD tracks too.
+- Sound FX switches the effects, on both the PWM and the PCM path.

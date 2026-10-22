@@ -135,8 +135,8 @@ diff -ruN a/src/platform/32x/main.cpp b/src/platform/32x/main.cpp
  #if defined(CD32X) && defined(CD32X_CART_MB)
 diff -ruN a/src/platform/32x/sfx.inc b/src/platform/32x/sfx.inc
 --- a/src/platform/32x/sfx.inc	1969-12-31 16:00:00.000000000 -0800
-+++ b/src/platform/32x/sfx.inc	2026-10-21 15:10:49.715215870 -0700
-@@ -0,0 +1,325 @@
++++ b/src/platform/32x/sfx.inc	2026-10-21 20:40:52.633927350 -0700
+@@ -0,0 +1,326 @@
 +/* ---------------------------------------------------------------------------------------
 + * SFX-2: every sound effect of the level through the 32X PWM (included by main.cpp after
 + *   fmv.inc, CD32X build only).
@@ -167,7 +167,8 @@ diff -ruN a/src/platform/32x/sfx.inc b/src/platform/32x/sfx.inc
 +#define MARS_CMD_SFX_STOP   0x7A5F              /* slave: DMA off, the PWM stays at silence */
 +#define SFX_CHANNELS        8
 +#define SFX_QUEUE           32
-+#define SFX_SHIFT           3                   /* volume: as loud as the Sega CD PCM effects (emulation) */
++#define SFX_GAIN            7                   /* SFX-3: volume, x/16 of the mix (was 2/16: too faint on
++                                                   the console); a sound at full volume: +-444 of +-478 */
 +#define SFX_SHARED(v)       (*(volatile __typeof__(v) *)((uint32)&(v) | 0x20000000))
 +#define SFX_THROUGH(p)      ((const uint8*)((uint32)(p) | 0x20000000))
 +#define SFX_OP_PLAY         1u
@@ -313,7 +314,7 @@ diff -ruN a/src/platform/32x/sfx.inc b/src/platform/32x/sfx.inc
 +    const int32 mul = gSfxMul, center = gSfxCenter, max = gSfxMax;
 +    for (int32 i = 0; i < n; i++)
 +    {
-+        int32 v = acc[i] >> SFX_SHIFT;          /* one sample at full volume: +-127 */
++        int32 v = (acc[i] * SFX_GAIN) >> 4;     /* louder sounds together: clipped below */
 +        if (v > max) v = max; else if (v < -max) v = -max;
 +        uint16 w = uint16(center + v);
 +        for (int32 j = 0; j < mul; j++)
@@ -464,7 +465,7 @@ diff -ruN a/src/platform/32x/sfx.inc b/src/platform/32x/sfx.inc
 +}
 diff -ruN a/src/platform/32x/sound.cpp b/src/platform/32x/sound.cpp
 --- a/src/platform/32x/sound.cpp	2026-10-21 15:10:49.712240820 -0700
-+++ b/src/platform/32x/sound.cpp	2026-10-21 15:10:49.713800473 -0700
++++ b/src/platform/32x/sound.cpp	2026-10-21 20:43:58.017188768 -0700
 @@ -31,37 +31,72 @@
  }
  
@@ -527,16 +528,16 @@ diff -ruN a/src/platform/32x/sound.cpp b/src/platform/32x/sound.cpp
 -/* SFXVOL-1: the pending effect's volume (1-64, 64 = full; soundPlay() already lowers it
 -   with the distance to the camera).  main.cpp sends it in COMM2 with the pad request. */
 -int32 sndPendingVolume()
+-{
+-    return sndPending ? X_CLAMP(sndPendingVol, 1, 64) : 0;
+-}
+-
+-int32 sndTakePending()
 +/* SFXVOL-1: the effect's volume (1-64, 64 = full; soundPlay() already lowers it with the
 +   distance to the camera).  main.cpp sends it in COMM2 with the command.
 +   SFX-1: the next pending effect (the loudest first), 0 = none */
 +int32 sndTakeNext(int32* volume)
  {
--    return sndPending ? X_CLAMP(sndPendingVol, 1, 64) : 0;
--}
--
--int32 sndTakePending()
--{
 -    int32 p = sndPending;
 -    sndPending = 0;
 -    return p;
@@ -558,7 +559,34 @@ diff -ruN a/src/platform/32x/sound.cpp b/src/platform/32x/sound.cpp
  }
  
  /* OL-10: what the SH2 started (the engine asks "still playing?" every frame) */
-@@ -145,8 +180,9 @@
+@@ -71,6 +106,8 @@
+ 
+ void sndPlayTrack(int32 track)
+ {
++    if (!gSettings.audio_music)     /* MUSIC-1: Options -> Sound -> Music off: no CD audio */
++        return;
+     /* CUTAUDIO-1: a cut-scene's sound (game tracks 22-25, voices + music from the game CD) -
+        once per visit: when it has ended the engine asks again, then nothing more plays.
+        PASSPORT-3: in a cut-scene level ANY request means its own track (the level table has
+@@ -130,6 +167,17 @@
+ 
+ bool sndTrackIsPlaying()
+ {
++    if (!gSettings.audio_music)     /* MUSIC-1: switched off - stop what plays; "playing" so the */
++    {                               /* engine doesn't ask again (switched on: 0 -> it restarts)  */
++        if (sndTrack)
++        {
++            MARS_SYS_COMM2 = 0;
++            sndCmd(SND_CMD_STOP);
++            sndTrack = 0;
++            sndGrace = 0;
++        }
++        return true;
++    }
+     if (!sndTrack)
+         return false;
+     if (sndLoops(sndTrack))         /* looping music plays until it is stopped */
+@@ -145,8 +193,9 @@
      return false;
  }
  
