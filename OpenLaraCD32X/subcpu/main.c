@@ -56,6 +56,9 @@ extern int  scd_bios_call(int fn, int d1, void *a0);
 #ifndef OL_CARTW
 #define OL_CARTW 0              /* CARTW-1: CMD 46 copies to the cart in words (Makefile CARTW) */
 #endif
+#ifndef OL_UB
+#define OL_UB 0                 /* UB-1: the Unfinished Business level files (Makefile UB) */
+#endif
 #ifndef OL_SLOTS
 #define OL_SLOTS 0              /* SLOTS-1: CMD 61 also writes the save slot area (Makefile SLOTS) */
 #endif
@@ -337,6 +340,12 @@ static const char *const ol_level_files[] = {
     "LEVEL7A.PKD", "LEVEL7B.PKD", "CUT2.PKD",    "LEVEL8A.PKD", "LEVEL8B.PKD",
     "LEVEL8C.PKD", "LEVEL10A.PKD","CUT3.PKD",    "LEVEL10B.PKD","CUT4.PKD",
     "LEVEL10C.PKD"
+#if OL_UB
+    /* UB-1 (OL_UB, Makefile UB=1, the default): Unfinished Business - LevelID 21-24, so file
+       100 + id (and 200 + id) finds them like every other level.  A disc without them: CMD 38
+       answers "not found" (length 0), the game then leaves them out of the passport. */
+    , "EGYPT.PKD", "CAT.PKD", "END.PKD", "END2.PKD"
+#endif
 };
 #define OL_LEVEL_COUNT  ((int)(sizeof(ol_level_files) / sizeof(ol_level_files[0])))
 /* FMV-1: the movies, file 300 + movie (the game's order) -> the level slot (2 MB) */

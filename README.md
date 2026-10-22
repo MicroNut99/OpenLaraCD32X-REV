@@ -1,6 +1,6 @@
 # Tomb Raider for Sega CD + 32X (OpenLara CD32X)
 
-Tomb Raider (1996) on the **Sega CD32X**, built on XProger's **OpenLara** 32X engine. **Version 1.6** (release notes: `docs/OPENLARA_CD32X_RELEASE.md`).
+Tomb Raider (1996) on the **Sega CD32X**, built on XProger's **OpenLara** 32X engine. **Version 1.7** (release notes: `docs/OPENLARA_CD32X_RELEASE.md`).
 The whole game runs from one CD: each level is loaded from the disc into a 4 MB RAM cart, with
 CD music, PCM sound effects, saving, the cut-scenes with their voices and the game's movies.
 
@@ -71,6 +71,18 @@ build if the game or Caves would overlap.
   into the pit and stays there.
 - **Story cues and voice lines** from the PlayStation soundtrack (CUES-1, optional).
 See `docs/CONTENT.md`.
+
+## Unfinished Business, loading pictures, end credits (v1.7)
+- **Unfinished Business**: copy `EGYPT.PHD`, `CAT.PHD`, `END.PHD`, `END2.PHD` (Tomb Raider Gold,
+  `TRUB/DATA`) into `gba/packer/TR1_PC/DATA` and run the packer again; the four levels appear in the
+  passport's level list. After The Hive: its credits, then the title.
+- **Area loading pictures**: the PlayStation version's five (Lara's Home, Peru, Greece, Egypt,
+  Atlantis) while a level loads; Caves (the title) keeps your own picture. Put the PlayStation disc's
+  `DELDATA/*LOA.RAW` and `GYMLOAD.RAW` in `OpenLaraCD32X/pictures/`.
+- **End credits**: after the END movie the PC game's credit pages and THE END (Unfinished Business:
+  its `CRED0.PCX` first - put it in `pictures/` too).
+- Every trigger was tested in emulation; the levels were not played through, and v1.7 has not run
+  on the console yet. Details: `docs/OPENLARA_CD32X_RELEASE.md` section 4.7.
 
 ## 8 MB / 16 MB cart test builds
 For the 16MB-PCB-CD32X paged SRAM cart: `CART=8 bash build.sh` or `CART=16 bash build.sh` makes
@@ -294,6 +306,7 @@ The version is in the file `VERSION` and is shown small in the corner of the loa
 | 1.0 | The whole game from CD: all levels, CD music, PCM sound effects, saving in the RAM cart, all enemies, full passport, loading screen. |
 | 1.1 | Faster: the two SH2s draw separate halves of the screen, game logic runs while the second SH2 is still drawing, and the next frame is prepared without waiting for the screen refresh (fights 7–8 → 9–10 fps, exploring 9–15 fps). Profiler build (`PROF=1`). Version shown on the loading picture. |
 | 1.2 | Fast start: Caves (the title menu) stays in the RAM cart and is not loaded again – hold A+B+C at start to reload it. |
+| 1.7 | Unfinished Business; the PlayStation area loading pictures; the end credits after the END movie and after The Hive. |
 | 1.6 | 16 save slots in the passport; all eleven movies, the big ones streamed from the CD, each at its place in the story; word copies to the cart; winged mutants fly, gorillas climb, swimming and land rats, Lara's double stays in the pit; the story cues and voices from the PlayStation soundtrack. |
 | 1.5 | Every TR1 trap and moving object, flipmaps, visible projectiles; all sound effects through the PWM and the Music switch; faster span loops (OPT-1/2); the last level resumes from the cart after power-off (RESUME-1); the drive reads ahead while loading (STREAM-1); settings and save area fixes; 8/16 MB cart test builds. |
 | 1.4 | Faster (fights 9–10 → 10–13 fps, exploring 10–16 fps): pauses in the wait loops so the two SH2s don't block each other on the bus, screen clear by the 32X VDP, the per-polygon drawing code in SDRAM, the SH2's divider for cut polygons. |

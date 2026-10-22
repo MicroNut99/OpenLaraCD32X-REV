@@ -11,6 +11,7 @@
 #   SLOTS=0 bash build.sh    the Sub-CPU without the save slot area (SLOTS-1): one save
 #   FMVRING=0 bash build.sh  no movie streaming (FMV-2): only the movies that fit the cart
 #   CARTW=0 bash build.sh    the Sub-CPU copies to the cart in bytes, as before (CARTW-1)
+#   UB=0 bash build.sh       the Sub-CPU without the Unfinished Business level files (UB-1)
 set -e
 HERE="$(cd "$(dirname "$0")" && pwd)"
 CART="${CART:-}"
@@ -54,6 +55,10 @@ if ! grep -q "SLOTS-1" "$ENGINE/main.cpp"; then
   echo "==> applying engine/openlara-content.patch to OpenLara-src (v1.6: save slots, streamed movies, creatures, cues)"
   git -C "$ENGINE/../../.." apply "$HERE/../engine/openlara-content.patch"
 fi
+if ! grep -q "UB-1" "$ENGINE/main.cpp"; then
+  echo "==> applying engine/openlara-ub.patch to OpenLara-src (v1.7: Unfinished Business, loading pictures, credits)"
+  git -C "$ENGINE/../../.." apply "$HERE/../engine/openlara-ub.patch"
+fi
 if [ -n "$CART" ]; then echo "==> CART TEST BUILD: ${CART} MB"; fi
 
 echo "==> splash";    python3 "$HERE/tools/make_ol_splash.py" "$HERE/splash.jpg" "$ENGINE/data/SPLASH.BIN"
@@ -65,26 +70,31 @@ if [ -n "${PS1MUSIC:-}" ]; then echo "==> cues and voices"; python3 "$HERE/tools
 # the cues and voice lines that are there and ignores the others
 TRACKBITS=$(python3 -c "
 import re,sys
-lo=hi=0
+lo=hi=x=0
 for l in open(sys.argv[1]):
     m=re.match(r'\s*(\d+)\s+\S',l.split('#')[0])
     if m:
         t=int(m.group(1))
         if t<32: lo|=1<<t
         elif t<64: hi|=1<<(t-32)
-print('-DCD32X_TRACKS_LO=0x%08Xu -DCD32X_TRACKS_HI=0x%08Xu'%(lo,hi))" "$HERE/music_map.txt")
+        elif t<96: x|=1<<(t-64)
+print('-DCD32X_TRACKS_LO=0x%08Xu -DCD32X_TRACKS_HI=0x%08Xu -DCD32X_TRACKS_X=0x%08Xu'%(lo,hi,x))" "$HERE/music_map.txt")
 echo "==> engine";      cd "$ENGINE" && rm -rf build && make CD32X=1 ${PROF:+PROF=1} ${CART:+CART=$CART} EXTRA="${EXTRA:-} $TRACKBITS"
 echo "==> ROM prep";    python3 "$HERE/tools/prep_openlara_cd.py" "$ENGINE/OpenLara.32x" "$HERE/subcpu/ROMS/OPENLARA.32X"
 echo "==> levels";      N=$(ls "$HERE"/gba/packer/out32x/*.PKD 2>/dev/null | wc -l); [ "$N" -ge 21 ] || { echo "*** only $N levels in gba/packer/out32x (21 expected) - stopping"; exit 1; }; cp "$HERE"/gba/packer/out32x/*.PKD "$HERE/subcpu/ROMS/"
 # SFX-2: every level's sound effects appended to its .PKD for the 32X PWM mixer (SFX=pcm: not)
 if [ "${SFX:-}" != "pcm" ]; then echo "==> sound banks"; python3 "$HERE/tools/sfx_bank.py" "$HERE/gba/packer/out32x" "$HERE/subcpu/ROMS"; fi
 echo "==> sound packs"; rm -f "$HERE"/subcpu/ROMS/SFX*.BIN; python3 "$HERE/tools/make_sfx_packs.py" "$HERE/gba/packer/out32x" "$HERE/subcpu/ROMS"
+# PICS-1: the area loading pictures (PlayStation DELDATA *LOA.RAW) and the end credits (PC CRED1-3.PCX,
+# END.PCX; Unfinished Business CRED0.PCX) -> subcpu/ROMS/IMAGE17-27.RAW.  Folders: pictures/ (put
+# the .RAW files and CRED0.PCX there) and the packer's TR1_PC/DATA.  Missing ones are left out.
+echo "==> pictures";    python3 "$HERE/tools/make_ol_pictures.py" "${PS1PICS:-$HERE/pictures}" "$HERE/gba/packer/TR1_PC/DATA" "${UBPICS:-$HERE/pictures}" "$HERE/subcpu/ROMS"
 echo "==> movies";      rm -f "$HERE"/subcpu/ROMS/*.ROQ   # FMV-2: all of them (the big ones stream); FMVRING=0: those that fit (1984 KB)
 for f in "$HERE"/fmv/*.ROQ; do
   if [ -f "$f" ] && { [ "${FMVRING:-1}" != "0" ] || [ "$(stat -c %s "$f")" -le 2031616 ]; }; then cp "$f" "$HERE/subcpu/ROMS/"; echo "    $(basename "$f")"; fi
 done
 echo "==> SH2 loader";  cd "$HERE/sh2"    && make -f Makefile.cdloader clean && make -f Makefile.cdloader
-echo "==> Sub-CPU";     cd "$HERE/subcpu" && make clean && make cd ${CART:+CART=$CART} ${STREAM:+STREAM=$STREAM} ${SLOTS:+SLOTS=$SLOTS} ${FMVRING:+FMVRING=$FMVRING} ${CARTW:+CARTW=$CARTW}
+echo "==> Sub-CPU";     cd "$HERE/subcpu" && make clean && make cd ${CART:+CART=$CART} ${STREAM:+STREAM=$STREAM} ${SLOTS:+SLOTS=$SLOTS} ${FMVRING:+FMVRING=$FMVRING} ${CARTW:+CARTW=$CARTW} ${UB:+UB=$UB}
 
 ISO="$HERE/subcpu/CDROMPlayer.iso"
 [ -f "$ISO" ] || { echo "*** $ISO was not made - stopping"; exit 1; }

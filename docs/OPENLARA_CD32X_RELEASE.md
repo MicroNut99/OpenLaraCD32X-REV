@@ -1,4 +1,4 @@
-# OpenLara CD32X – Release v1.6
+# OpenLara CD32X – Release v1.7
 
 **Tomb Raider (1996) on Sega CD + 32X**, running from one CD with a battery-backed RAM cart in the 32X.
 It is built on XProger's OpenLara: the fixed-point engine from its Game Boy Advance port, which XProger
@@ -197,6 +197,34 @@ Boot stack documentation and command ledger: https://github.com/MicroNut99/docs
   replies `0x101`; with an older Sub-CPU the game keeps the single save. The game's ROM must stay
   under 384 KB (`build.sh` checks; it is about 270 KB).
 
+### 4.7 v1.7: Unfinished Business, area loading pictures, end credits
+- **Unfinished Business (UB-1):** Return to Egypt, Temple of the Cat, Atlantean Stronghold and The Hive,
+  in the passport's level list when the disc has them, played straight through; after The Hive its
+  credits, then the title. The packer converts `EGYPT.PHD`, `CAT.PHD`, `END.PHD`, `END2.PHD` from
+  `gba/packer/TR1_PC/DATA` (Tomb Raider Gold's `TRUB/DATA`); the Sub-CPU knows the four file names
+  (switch `UB`, on by default). Return to Egypt has 1770 boxes (TR1 at most 481): on the 32X the boxes
+  are read from the cart instead of copied, and each enemy's zone is a bit table instead of a list
+  (the same boxes, in the same order). Music: game tracks 81–84 if `music_map.txt` lists them,
+  otherwise Khamoon's (Egypt, Cat) and Atlantis's (Stronghold, Hive). A saved game in an Unfinished
+  Business level on a disc without them goes to the title.
+- **Area loading pictures (PICS-1):** the PlayStation version's five loading pictures - Lara's Home,
+  Peru, Greece, Egypt, Atlantis (Unfinished Business: Egypt and Atlantis) - full screen with the red
+  bar while a level loads. Caves (the title) keeps your own loading picture. Each picture is a file
+  `IMAGEnn.RAW` loaded into the level slot just before the level (no new Sub-CPU command).
+- **End credits (PICS-1):** after the Great Pyramid: the END movie, then the PC game's credit pages
+  (CRED1–3) and THE END, then the title. After The Hive: Unfinished Business's own page (CRED0)
+  first. Each page stays 10 s (THE END 6 s); A, B, C or Start goes on.
+- **Build:** put the PlayStation disc's `DELDATA` pictures (`GYMLOAD.RAW`, `AZTECLOA.RAW`,
+  `GREEKLOA.RAW`, `EGYPTLOA.RAW`, `ATLANLOA.RAW`) and Unfinished Business's `CRED0.PCX` in `pictures/`;
+  the PC credits come from `gba/packer/TR1_PC/DATA`. `tools/make_ol_pictures.py` converts them
+  (`build.sh` runs it); a missing picture is left out (the usual loading picture, or no page).
+- **Tested:** every trigger in emulation - each area's picture while its level loads, the end of the
+  Great Pyramid (END, the credits, the title), the end of The Hive (its credits, the title), each
+  Unfinished Business level loading and running, the pumas and mutants of Return to Egypt and the
+  centaurs of the Atlantean Stronghold after Lara, TR1's wolves and raptors moving exactly as before
+  the box change. Not tested in real gameplay: the
+  levels were not played through, and nothing of v1.7 has run on the console yet.
+
 ## 5. What was added to the source
 
 Starting point: XProger/OpenLara, commit `3b268ca` (its 32X build), plus Chilly Willy's Sega CD / 32X
@@ -276,7 +304,8 @@ Full steps (packer, music, cut-scene voices, movies): the repository's `README.m
 ## 8. Known limitations
 - The big movies wait about 16 s for their first 1.8 MB before they start; a movie's skip button must
   be held a moment while a chunk loads.
-- *Unfinished Business* is not included (its levels were never converted).
+- *Unfinished Business* needs its level files (Tomb Raider Gold or the free download); without them the
+  passport leaves it out.
 - The story cues and voice lines need the PlayStation soundtrack set (`PS1MUSIC=`).
 - The Midas gold look (Lara turning to gold) is not drawn; the death itself works.
 - Cut-scene sound may start a moment late (the drive seeks to the track).
@@ -296,7 +325,8 @@ and save piece 15 as scratch. The normal build has no test code.
 | 1.3 | Cut-scenes with voices, movies, Lara's double, effects quieter with distance |
 | 1.4 | REV-1…4: bus pauses, VDP clear, SDRAM drawing code, hardware divider |
 | 1.5 | OPT-1/2 span loops, RESUME-1, all sound effects (PWM), Music switch, every TR1 trap and object, flipmaps, visible projectiles, STREAM-1 faster loading, save area and settings fixes, 8/16 MB cart test builds |
-| **1.6** | 16 save slots, all eleven movies (streamed, at their story places), word copies to the cart, flying mutants, climbing gorillas, swimming and land rats, the double stays in the pit, story cues and voices; fixes from the review |
+| 1.6 | 16 save slots, all eleven movies (streamed, at their story places), word copies to the cart, flying mutants, climbing gorillas, swimming and land rats, the double stays in the pit, story cues and voices; fixes from the review |
+| **1.7** | Unfinished Business, the PlayStation area loading pictures, the end credits |
 
 ## 11. Credits
 - **XProger** (Timur Gagiev) and contributors – **OpenLara**, and its **Game Boy Advance port**: the

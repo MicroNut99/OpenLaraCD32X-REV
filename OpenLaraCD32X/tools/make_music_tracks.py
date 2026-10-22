@@ -6,7 +6,7 @@ in music_map.txt gets that WAV (44.1 kHz 16-bit stereo, as converted from the MP
 other number gets 2 s of silence, so the numbering never shifts."""
 import os, shutil, sys, wave
 
-FIRST, LAST = 2, 80
+FIRST, LAST, LAST_MAX = 2, 80, 84     # UB-1: 81-84 = the Unfinished Business levels' music (optional)
 
 def silence(path, seconds=2):
     w = wave.open(path, "wb")
@@ -28,14 +28,18 @@ def main():
         if len(parts) != 2 or not parts[0].isdigit():
             sys.exit("*** %s line %d: expected '<track> <file name start>'" % (mapfile, n))
         t, start = int(parts[0]), parts[1].strip()
-        if not FIRST <= t <= LAST:
-            sys.exit("*** %s line %d: track %d outside %d-%d" % (mapfile, n, t, FIRST, LAST))
+        if not FIRST <= t <= LAST_MAX:
+            sys.exit("*** %s line %d: track %d outside %d-%d" % (mapfile, n, t, FIRST, LAST_MAX))
         hits = [f for f in files if f.startswith(start)]
         if len(hits) != 1:
             sys.exit("*** %s line %d: '%s' matches %d files in %s" % (mapfile, n, start, len(hits), src))
         table[t] = hits[0]
     os.makedirs(dst, exist_ok=True)
-    for t in range(FIRST, LAST + 1):
+    last = max([LAST] + list(table))            # UB-1: tracks after 80 only when the map lists one
+    for f in os.listdir(dst):                   # an earlier build's extra tracks
+        if f.startswith("Track") and f.endswith(".wav") and f[5:-4].isdigit() and int(f[5:-4]) > last:
+            os.remove(os.path.join(dst, f))
+    for t in range(FIRST, last + 1):
         out = os.path.join(dst, "Track%02d.wav" % t)
         if t in table:
             shutil.copyfile(os.path.join(src, table[t]), out)
@@ -43,7 +47,7 @@ def main():
         else:
             silence(out)
     print("==> %d CD audio tracks (%d with music, %d silent) in %s"
-          % (LAST - FIRST + 1, len(table), LAST - FIRST + 1 - len(table), dst))
+          % (last - FIRST + 1, len(table), last - FIRST + 1 - len(table), dst))
 
 if __name__ == "__main__":
     main()

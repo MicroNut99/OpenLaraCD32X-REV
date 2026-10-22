@@ -300,6 +300,10 @@ enum LevelID
     LVL_TR1_10B,
     LVL_TR1_CUT_4,
     LVL_TR1_10C,
+    LVL_TR1_EGYPT,      // UB-1: Unfinished Business (EGYPT.PHD, CAT.PHD, END.PHD, END2.PHD in TR1_PC/DATA)
+    LVL_TR1_CAT,
+    LVL_TR1_END,
+    LVL_TR1_END2,
     LVL_MAX
 };
 
@@ -324,7 +328,11 @@ const char* levelNames[LVL_MAX] = {
     "CUT3",
     "LEVEL10B",
     "CUT4",
-    "LEVEL10C"
+    "LEVEL10C",
+    "EGYPT",            // UB-1: a missing file is skipped (the packer says "can't open")
+    "CAT",
+    "END",
+    "END2"
 };
 
 #define ITEM_TYPES(E) \

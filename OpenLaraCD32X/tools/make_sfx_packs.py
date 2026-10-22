@@ -23,7 +23,8 @@ import io, os, struct, sys, wave
 
 LEVELS = ["TITLE", "GYM", "LEVEL1", "LEVEL2", "LEVEL3A", "LEVEL3B", "CUT1", "LEVEL4", "LEVEL5",
           "LEVEL6", "LEVEL7A", "LEVEL7B", "CUT2", "LEVEL8A", "LEVEL8B", "LEVEL8C", "LEVEL10A",
-          "CUT3", "LEVEL10B", "CUT4", "LEVEL10C"]          # = enum LevelID order
+          "CUT3", "LEVEL10B", "CUT4", "LEVEL10C",
+          "EGYPT", "CAT", "END", "END2"]                   # = enum LevelID order (UB-1: 21-24)
 RATE, MAX_SECS, MAX_FX, RAM, PAGE, TAIL = 6000, 0.75, 31, 65536, 256, 16   # SFX-1
 
 def read_snd(path):

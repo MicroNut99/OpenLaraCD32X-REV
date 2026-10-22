@@ -1,0 +1,579 @@
+diff -ruN a/src/fixed/camera.h b/src/fixed/camera.h
+--- a/src/fixed/camera.h	2026-10-22 06:44:20.539346883 -0700
++++ b/src/fixed/camera.h	2026-10-22 06:44:20.541487600 -0700
+@@ -89,7 +89,7 @@
+             nextLevel(LVL_TR1_TITLE);
+         } else
+     #endif
+-        nextLevel(LevelID(gLevelID + 1));
++        nextLevelEnd();
+     }
+ }
+ 
+diff -ruN a/src/fixed/common.h b/src/fixed/common.h
+--- a/src/fixed/common.h	2026-10-22 06:44:20.553412396 -0700
++++ b/src/fixed/common.h	2026-10-22 06:44:20.555521588 -0700
+@@ -444,7 +444,11 @@
+ #define MAX_MESHES          512
+ #define MAX_STATIC_MESHES   50
+ #define MAX_CAMERAS         16
++#ifdef CD32X
++#define MAX_BOXES           1792    // UB-1: Return to Egypt has 1770 (TR1 at most 481)
++#else
+ #define MAX_BOXES           1024
++#endif
+ #define MAX_TEXTURES        1536
+ #define MAX_SPRITES         180
+ #define MAX_FACES           1920
+@@ -1398,7 +1402,9 @@
+ {
+     struct Cell
+     {
++    #ifndef CD32X
+         uint16 boxIndex;
++    #endif
+         uint16 weight;
+         uint16 end;
+         uint16 next;
+@@ -1406,6 +1412,12 @@
+ 
+     Cell cells[MAX_BOXES];
+     uint32 cellsCount;
++#ifdef CD32X
++    // UB-1: no list of the zone's boxes (2 bytes a box less, for 1792 boxes): one bit per box
++    // instead, and randomBox finds the n-th set bit - the same box the list gave
++    uint32 member[(MAX_BOXES + 31) / 32];
++    int32 randomBox(int32 n) const;
++#endif
+ 
+     uint32 zoneType;
+     uint32 weight;
+@@ -1556,7 +1568,9 @@
+ 
+     int16 ammo[WEAPON_MAX]; // TODO make global
+ 
+-    Nav nav;
++#ifndef CD32X
++    Nav nav;    // UB-1: never used for Lara - 8 KB of SDRAM for the bigger enemies' Nav
++#endif
+ 
+     uint16 lastInput;
+     int8 healthTimer;
+@@ -2902,6 +2916,7 @@
+ 
+ void startLevel(LevelID id);
+ void nextLevel(LevelID next);
++void nextLevelEnd();    // UB-1: the level is finished (the next one in order, or the game's end)
+ bool gameSave();
+ bool gameLoad();
+ 
+diff -ruN a/src/fixed/enemy.h b/src/fixed/enemy.h
+--- a/src/fixed/enemy.h	2026-10-22 06:44:20.562744597 -0700
++++ b/src/fixed/enemy.h	2026-10-22 06:44:20.564772134 -0700
+@@ -376,7 +376,11 @@
+ 
+     X_INLINE int32 getRandomBox()
+     {
++    #ifdef CD32X
++        return extraE->nav.randomBox(RAND_LOGIC(extraE->nav.cellsCount));
++    #else
+         return extraE->nav.cells[RAND_LOGIC(extraE->nav.cellsCount)].boxIndex;
++    #endif
+     }
+ 
+     bool checkZone(int16 boxIndex)
+diff -ruN a/src/fixed/fmt/pkd.h b/src/fixed/fmt/pkd.h
+--- a/src/fixed/fmt/pkd.h	2026-10-22 06:44:20.572195967 -0700
++++ b/src/fixed/fmt/pkd.h	2026-10-22 06:44:20.574039633 -0700
+@@ -56,9 +56,14 @@
+     memcpy(sprites, level.sprites, level.spritesCount * sizeof(Sprite));
+     level.sprites = sprites;
+ 
+-    // prepare boxes
++#ifndef CD32X
++    // prepare boxes (UB-1: the 32X reads them from the cart - read-only, cached)
+     memcpy(boxes, level.boxes, level.boxesCount * sizeof(Box));
+     level.boxes = boxes;
++#else
++    if (level.boxesCount > MAX_BOXES)
++        level.boxesCount = MAX_BOXES;   // UB-1: Nav's tables hold MAX_BOXES (no TR1 / UB level is near it)
++#endif
+ 
+     // prepare fixed cameras
+     memcpy(cameras, level.cameras, level.camerasCount * sizeof(FixedCamera));
+diff -ruN a/src/fixed/game.h b/src/fixed/game.h
+--- a/src/fixed/game.h	2026-10-22 06:44:20.581535798 -0700
++++ b/src/fixed/game.h	2026-10-22 06:44:20.583332788 -0700
+@@ -22,6 +22,14 @@
+     gNextLevel = next;
+ }
+ 
++bool gLevelEnded = false;   // UB-1: set when a level is finished (not a passport pick, a load, ...)
++
++void nextLevelEnd()
++{
++    nextLevel(LevelID(gLevelID + 1));
++    gLevelEnded = (gNextLevel == LevelID(gLevelID + 1));
++}
++
+ bool gameSave()
+ {
+     gSaveGame.version = SAVEGAME_VER;
+@@ -64,6 +72,11 @@
+             return false;
+     }
+ 
++#ifdef CD32X
++    extern bool osUbOnDisc();
++    if (gSaveGame.level > LVL_TR1_10C && !osUbOnDisc())
++        return false;           // UB-1: an Unfinished Business save, this disc has none of it
++#endif
+     SaveGame tmp = gSaveGame;
+     gLevelID = (LevelID)gSaveGame.level;
+     startLevel(gLevelID);
+@@ -353,19 +366,30 @@
+     {
+     #ifdef CD32X
+         extern void osStoryMovies(int32 prev, int32 next);    // FMV-2: main.cpp
+-        if (gNextLevel != LVL_LOAD) {
+-            osStoryMovies(gLevelID, gNextLevel);    // the game's movies at their places
+-        }
+-        // FMV-2: after the Great Pyramid (and its END movie) the game is over: back to the
+-        // title.  Unfinished Business was not converted; osLoadLevel used to load Caves for it.
+-        if (gNextLevel > LVL_TR1_10C && gNextLevel < LVL_LOAD) {
++        extern bool osPlayVideo(int32 n);
++        extern void osCredits(bool ub);                       // PICS-1: fmv.inc
++        if (gLevelEnded && gLevelID == LVL_TR1_10C) {
++            // the Great Pyramid finished: the END movie, the credits, then the title (as the PC
++            // game; Unfinished Business is its own game, picked in the passport)
++            osPlayVideo(10);
++            osCredits(false);
++            gNextLevel = LVL_TR1_TITLE;
++        } else if (gLevelEnded && gLevelID == LVL_TR1_END2) {
++            // UB-1: The Hive finished: Unfinished Business's credits, then the title
++            osCredits(true);
+             gNextLevel = LVL_TR1_TITLE;
++        } else if (gNextLevel != LVL_LOAD) {
++            osStoryMovies(gLevelID, gNextLevel);    // the game's movies at their places
+         }
++        gLevelEnded = false;
+     #endif
+         gLevelID = gNextLevel;
+         gNextLevel = LVL_MAX;
+         if (gLevelID == LVL_LOAD) {
+-            gameLoad();
++            if (!gameLoad()) {
++                gLevelID = LVL_TR1_TITLE;           // UB-1: nothing to load (or not on this disc)
++                startLevel(gLevelID);
++            }
+         } else {
+             startLevel(gLevelID);
+         }
+diff -ruN a/src/fixed/inventory.h b/src/fixed/inventory.h
+--- a/src/fixed/inventory.h	2026-10-22 06:44:20.596116223 -0700
++++ b/src/fixed/inventory.h	2026-10-22 06:44:20.599656992 -0700
+@@ -235,6 +235,8 @@
+             { LVL_TR1_6, STR_TR1_LEVEL6 }, { LVL_TR1_7A, STR_TR1_LEVEL7A }, { LVL_TR1_7B, STR_TR1_LEVEL7B },
+             { LVL_TR1_8A, STR_TR1_LEVEL8A }, { LVL_TR1_8B, STR_TR1_LEVEL8B }, { LVL_TR1_8C, STR_TR1_LEVEL8C },
+             { LVL_TR1_10A, STR_TR1_LEVEL10A }, { LVL_TR1_10B, STR_TR1_LEVEL10B }, { LVL_TR1_10C, STR_TR1_LEVEL10C },
++            { LVL_TR1_EGYPT, STR_TR1_EGYPT }, { LVL_TR1_CAT, STR_TR1_CAT },               /* UB-1 */
++            { LVL_TR1_END, STR_TR1_END }, { LVL_TR1_END2, STR_TR1_END2 },
+         };
+         for (int32 i = 0; i < int32(sizeof(names) / sizeof(names[0])); i++)
+             if (names[i].id == level) return names[i].str;
+@@ -1360,6 +1362,15 @@
+                     for (int32 i = 0; i < int32(sizeof(passportLevels) / sizeof(passportLevels[0])); i++) {
+                         OPTION_BTN(passportLevels[i].str, passportLevels[i].id);
+                     }
++                    /* UB-1: Unfinished Business, when the disc has it */
++                    extern bool osUbOnDisc();
++                    if (osUbOnDisc())
++                    {
++                        OPTION_BTN(STR_TR1_EGYPT, LVL_TR1_EGYPT);
++                        OPTION_BTN(STR_TR1_CAT, LVL_TR1_CAT);
++                        OPTION_BTN(STR_TR1_END, LVL_TR1_END);
++                        OPTION_BTN(STR_TR1_END2, LVL_TR1_END2);
++                    }
+                     /* PASSPORT-1: the cut-scenes (in-engine scenes, CUT1-4.PKD on the disc) */
+                     OPTION_SPACE();
+                     OPTION_BTN(STR_CD32X_CUT1, LVL_TR1_CUT_1);
+diff -ruN a/src/fixed/level.h b/src/fixed/level.h
+--- a/src/fixed/level.h	2026-10-22 06:44:20.610604439 -0700
++++ b/src/fixed/level.h	2026-10-22 06:44:20.613722818 -0700
+@@ -20,7 +20,9 @@
+ EWRAM_DATA Texture textures[MAX_TEXTURES]; // animated textures require memory swap
+ EWRAM_DATA Sprite sprites[MAX_SPRITES];
+ EWRAM_DATA FixedCamera cameras[MAX_CAMERAS];
+-EWRAM_DATA Box boxes[MAX_BOXES];
++#ifndef CD32X
++EWRAM_DATA Box boxes[MAX_BOXES];    // UB-1: the 32X reads them from the cart (never written)
++#endif
+ #endif
+ 
+ EWRAM_DATA Room rooms[MAX_ROOMS];
+diff -ruN a/src/fixed/nav.h b/src/fixed/nav.h
+--- a/src/fixed/nav.h	2026-10-22 06:44:20.624609421 -0700
++++ b/src/fixed/nav.h	2026-10-22 06:44:20.627995735 -0700
+@@ -39,6 +39,17 @@
+     uint16 altZone = altZones[boxIndex];
+ 
+     cellsCount = 0;
++#ifdef CD32X
++    memset(member, 0, sizeof(member));
++    for (int32 i = 0; i < level.boxesCount; i++)
++    {
++        if ((defZone == defZones[i]) || (altZone == altZones[i]))
++        {
++            member[i >> 5] |= 1u << (i & 31);
++            cellsCount++;
++        }
++    }
++#else
+     Nav::Cell* cell = cells;
+ 
+     for (int32 i = 0; i < level.boxesCount; i++)
+@@ -49,10 +60,33 @@
+             cellsCount++;
+         }
+     }
++#endif
+ 
+     ASSERT(cellsCount > 0);
+ }
+ 
++#ifdef CD32X
++int32 Nav::randomBox(int32 n) const     // UB-1: the n-th box of the zone (as cells[n].boxIndex was)
++{
++    for (int32 w = 0; w < (level.boxesCount + 31) >> 5; w++)
++    {
++        uint32 bits = member[w];
++        int32 c = __builtin_popcount(bits);
++        if (n >= c)                         // not in this word: 32 boxes at a time
++        {
++            n -= c;
++            continue;
++        }
++        for (int32 b = 0; ; b++, bits >>= 1)
++        {
++            if ((bits & 1) && (n-- == 0))
++                return (w << 5) + b;
++        }
++    }
++    return 0;
++}
++#endif
++
+ vec3i Nav::getWaypoint(uint32 boxIndex, const vec3i &from)
+ {
+     if (nextBox != NO_BOX && nextBox != endBox)
+diff -ruN a/src/fixed/room.h b/src/fixed/room.h
+--- a/src/fixed/room.h	2026-10-22 06:44:20.638604522 -0700
++++ b/src/fixed/room.h	2026-10-22 06:44:20.641569277 -0700
+@@ -1130,7 +1130,7 @@
+             }
+ 
+             case TRIGGER_ACTION_END:
+-                nextLevel(LevelID(gLevelID + 1));
++                nextLevelEnd();
+                 break;
+ 
+             case TRIGGER_ACTION_SOUNDTRACK:
+diff -ruN a/src/fixed/traps.h b/src/fixed/traps.h
+--- a/src/fixed/traps.h	2026-10-22 06:44:20.652338725 -0700
++++ b/src/fixed/traps.h	2026-10-22 06:44:20.655332792 -0700
+@@ -216,7 +216,7 @@
+             break;
+ 
+         case FX_FINISH_LEVEL:
+-            nextLevel(LevelID(gLevelID + 1));
++            nextLevelEnd();
+             break;
+ 
+         case FX_EARTHQUAKE:
+diff -ruN a/src/platform/32x/fmv.inc b/src/platform/32x/fmv.inc
+--- a/src/platform/32x/fmv.inc	2026-10-22 06:44:20.694032644 -0700
++++ b/src/platform/32x/fmv.inc	2026-10-22 06:44:20.720486500 -0700
+@@ -649,9 +649,9 @@
+ /* FMV-2: the movies at their places in the story (as the PC game's game flow): CAFE + SNOW
+    before Caves (a new game), MANSION before Lara's Home, LIFT before St. Francis' Folly,
+    VISION before the City of Khamoon, CANYON before Natla's Mines, PYRAMID before Atlantis,
+-   PRISON after Atlantis (before its cut-scene), END after the Great Pyramid.  Only when the
+-   game goes on to that level, not when a level is picked in the passport - except Caves from
+-   the title, which is the new game.  The game then goes back to the title (game.h). */
++   PRISON after Atlantis (before its cut-scene).  Only when the game goes on to that level, not
++   when a level is picked in the passport - except Caves from the title, which is the new game.
++   END after the Great Pyramid is played by game.h (with the credits, then the title). */
+ bool osPlayVideo(int32 n);
+ void osStoryMovies(int32 prev, int32 next)
+ {
+@@ -662,7 +662,6 @@
+     else if (next == LVL_TR1_10A && prev == LVL_TR1_8C)                { osPlayVideo(6); }
+     else if (next == LVL_TR1_10B && (prev == LVL_TR1_10A || prev == LVL_TR1_CUT_3)) { osPlayVideo(7); }
+     else if (next == LVL_TR1_CUT_4 && prev == LVL_TR1_10B)             { osPlayVideo(8); }
+-    else if (prev == LVL_TR1_10C && next == LVL_TR1_EGYPT)             { osPlayVideo(10); }   /* the end (not exit to title) */
+ }
+ 
+ bool osPlayVideo(int32 n)                       /* SFX-2: the effects stop while a movie plays */
+@@ -672,3 +671,59 @@
+     sfxBankStart();
+     return ok;
+ }
++
++/* PICS-1: the end credits - the PC game's pictures, full screen, each until A, B, C or Start or
++   for a while: CRED1-3 and THE END after the Great Pyramid, Unfinished Business's own page
++   (CRED0) first after The Hive.  IMAGE23-27.RAW (tools/make_ol_pictures.py); a page not on the
++   disc is skipped. */
++void osCredits(bool ub)
++{
++    static const uint8 tr1[] = { 23, 24, 25, 26 };
++    static const uint8 ubp[] = { 27, 23, 24, 25, 26 };
++    const uint8* list = ub ? ubp : tr1;
++    int32 count = ub ? int32(sizeof(ubp)) : int32(sizeof(tr1));
++
++    sfxBankStop();
++    MARS_SYS_COMM2 = 0;                         /* music off - no CD data reads while it plays */
++    cdCmd(54);
++    MARS_WAIT();
++    gCartLevel = -1;                            /* the pictures go into the level slot */
++    int32 rate = (MARS_VDP_DISPMODE & MARS_NTSC_FORMAT) ? 60 : 50;
++    bool shown = false;
++    for (int32 i = 0; i < count; i++)
++    {
++        const uint8* pic = picLoad(list[i]);
++        if (!pic)
++            continue;
++        gSplashPic = pic;
++        gSplashNoBar = true;
++        splashBegin();                          /* both buffers, the picture's colours */
++        shown = true;
++        int32 secs = (list[i] == 26) ? 6 : 10;  /* THE END: a little shorter */
++        int32 t0 = *(volatile int32*)&gFrameIndex;
++        int32 prev = 0xFFFF, pad = 0xFFFF;      /* buttons already held don't count */
++        int32 last = -1;
++        while (*(volatile int32*)&gFrameIndex - t0 < secs * rate)
++        {
++            int32 now = *(volatile int32*)&gFrameIndex;
++            if (now == last)                    /* the pad once a frame (the Sub-CPU's COMM) */
++            {
++                cdPause();
++                continue;
++            }
++            last = now;
++            pad = fmvPad(pad);
++            int32 hit = pad & ~prev;
++            prev = pad;
++            if (hit & (SEGA_CTRL_A | SEGA_CTRL_B | SEGA_CTRL_C | SEGA_CTRL_START))
++                break;
++            cdPause();
++        }
++    }
++    if (shown)
++        splashEnd();                            /* black, the game's palette back */
++    gSplashPic = NULL;
++    gSplashNoBar = false;
++    sfxBankStart();
++}
++
+diff -ruN a/src/platform/32x/main.cpp b/src/platform/32x/main.cpp
+--- a/src/platform/32x/main.cpp	2026-10-22 06:44:20.666915555 -0700
++++ b/src/platform/32x/main.cpp	2026-10-22 06:44:20.719971280 -0700
+@@ -84,6 +84,14 @@
+ void pageClear();
+ static const uint16* gGamePalette = 0;             /* OL-3: the game palette, restored after a load */
+ 
++/* PICS-1: a full-screen picture from the disc instead of SPLASH.BIN (tools/make_ol_pictures.py):
++   512-byte palette + 320 x 224 pixels, colours 252-255 as above.  NULL = SPLASH.BIN. */
++#define PIC_W       320
++#define PIC_H       224
++#define PIC_SIZE    (512 + PIC_W * PIC_H)
++static const uint8* gSplashPic = NULL;
++static bool gSplashNoBar = false;                  /* PICS-1: the credits have no bar */
++
+ static uint8 splashBarColor(int32 x, int32 y, int32 fill)
+ {
+     if (y < BAR_Y0 + 2 || y >= BAR_Y1 - 2 || x < BAR_X0 + 2 || x >= BAR_X1 - 2)
+@@ -107,6 +115,20 @@
+ static void splashPage(int32 done, int32 total)
+ {
+     volatile uint16* fb = (volatile uint16*)&MARS_FRAMEBUFFER + 0x100;
++    if (gSplashPic)                                /* PICS-1: the whole screen */
++    {
++        const volatile uint16* src = (const volatile uint16*)(gSplashPic + 512);
++        for (int32 y = 0; y < FRAME_HEIGHT; y++)
++        {
++            volatile uint16* row = fb + y * (FRAME_WIDTH / 2);
++            for (int32 x = 0; x < FRAME_WIDTH / 2; x++)
++                row[x] = src[x];
++            src += PIC_W / 2;
++        }
++        if (!gSplashNoBar)
++            splashBar(done, total);
++        return;
++    }
+     const uint16* pix = (const uint16*)((const uint8*)SPLASH_BIN + 512);
+     const uint16 black = (C_BLACK << 8) | C_BLACK;
+     for (int32 y = 0; y < FRAME_HEIGHT; y++)
+@@ -130,7 +152,7 @@
+ static void splashBegin()
+ {
+     const uint16* gamePal = gGamePalette;
+-    osSetPalette((const uint16*)SPLASH_BIN);       /* the picture's own colours */
++    osSetPalette(gSplashPic ? (const uint16*)gSplashPic : (const uint16*)SPLASH_BIN);   /* the picture's own colours */
+     gGamePalette = gamePal;                        /* ...but remember the game's */
+     for (int32 i = 0; i < 2; i++)                  /* the same picture in both buffers */
+     {
+@@ -161,6 +183,8 @@
+     }
+     if (gGamePalette)
+         osSetPalette(gGamePalette);
++    gSplashPic = NULL;                             /* PICS-1: the next one is SPLASH.BIN again */
++    gSplashNoBar = false;
+ }
+ 
+ /* returns the file length, -1 not on the disc, -2 bad chunk(s), -3/-4 no answer */
+@@ -191,6 +215,29 @@
+     return bad ? -2 : len;
+ }
+ 
++/* PICS-1: a picture file IMAGEnn.RAW (nn 17-27).  The Sub-CPU puts file nn at cart nn x 128 KB
++   (CMD 38 / 46 as for every file, no new command) - inside the level slot, which the level
++   loaded next overwrites.  No bar while it loads.  NULL = not on the disc (or broken). */
++static const uint8* picLoad(int32 n)
++{
++    MARS_SYS_COMM2 = (uint16)n;
++    cdCmd(CD_CMD_OPEN_FILE);
++    if (MARS_SYS_COMM0 != 0)
++        return NULL;
++    int32 len = (int32)CD_COMM8_32;
++    if (len != PIC_SIZE)
++        return NULL;
++    for (uint32 c = 0; c < ((uint32)len + 32767) >> 15; c++)
++    {
++        MARS_SYS_COMM2 = (uint16)(c | 0x8000);     /* no read-back */
++        CD_COMM12_16 = 0;
++        cdCmd(CD_CMD_CHUNK_TO_CART);
++        if (MARS_SYS_COMM0 != 0 || CD_COMM12_16 != 0)
++            return NULL;
++    }
++    return (const uint8*)((0x02000000 + ((uint32)n << 17)) | 0x20000000);   /* read cache-through */
++}
++
+ static void cdLoadFailed()                  /* red screen = a level could not be loaded */
+ {
+     for (int32 i = 0; i < 256; i++)
+@@ -529,6 +576,7 @@
+  * --------------------------------------------------------------------------------------- */
+ int32 gSaveSlot = -1;                       /* the slot of the last load or save */
+ int32 osSaveSlots();
++bool osUbOnDisc();
+ static int32 gSlotsOk = -1;                 /* -1 not asked yet, 0 no, 1 yes */
+ 
+ static uint32 slotBase(int32 slot)
+@@ -902,11 +950,44 @@
+     return (const void*)CD_CAVES_CART;
+ }
+ 
++/* UB-1: are the Unfinished Business levels on this disc (and does the Sub-CPU know them)? */
++bool osUbOnDisc()
++{
++    static int32 ub = -1;
++    if (ub < 0)
++    {
++        MARS_SYS_COMM2 = (uint16)(CD_FILE_LEVEL_BASE + LVL_TR1_EGYPT);
++        cdCmd(CD_CMD_OPEN_FILE);                   /* only looks the file up */
++        ub = (MARS_SYS_COMM0 == 0 && (int32)CD_COMM8_32 > 0) ? 1 : 0;
++    }
++    return ub != 0;
++}
++
++/* PICS-1: the area's loading picture (the PlayStation version's): IMAGEnn.RAW, 0 = SPLASH.BIN */
++static int32 picForLevel(int32 id)
++{
++    switch (id)
++    {
++        case LVL_TR1_GYM:   return 17;                                  /* Lara's Home */
++        case LVL_TR1_2: case LVL_TR1_3A: case LVL_TR1_3B: case LVL_TR1_CUT_1:
++            return 18;                                                  /* Peru */
++        case LVL_TR1_4: case LVL_TR1_5: case LVL_TR1_6: case LVL_TR1_7A: case LVL_TR1_7B: case LVL_TR1_CUT_2:
++            return 19;                                                  /* Greece */
++        case LVL_TR1_8A: case LVL_TR1_8B: case LVL_TR1_8C: case LVL_TR1_EGYPT: case LVL_TR1_CAT:
++            return 21;                                                  /* Egypt */
++        case LVL_TR1_10A: case LVL_TR1_CUT_3: case LVL_TR1_10B: case LVL_TR1_CUT_4: case LVL_TR1_10C:
++        case LVL_TR1_END: case LVL_TR1_END2:
++            return 22;                                                  /* Atlantis */
++        default:
++            return 0;                                                   /* Caves: the title picture */
++    }
++}
++
+ const void* osLoadLevel(LevelID id)
+ {
+     /* the title "level" has always been Level 1 on the 32X (TITLE.PKD was never used);
+-       ids past Atlantis (Unfinished Business, ...) were not converted */
+-    if (id == LVL_TR1_TITLE || id > LVL_TR1_10C)
++       UB-1: Unfinished Business when the disc has it */
++    if (id == LVL_TR1_TITLE || id > LVL_TR1_END2 || (id > LVL_TR1_10C && !osUbOnDisc()))
+         id = LVL_TR1_1;
+ 
+     if (id == LVL_TR1_1)                           /* CAVES-1: its own place in the cart */
+@@ -933,6 +1014,9 @@
+ 
+     MARS_SYS_COMM2 = 0;                            /* OL-4: music off - no CD data */
+     cdCmd(54);                                     /*       reads while it plays */
++    gCartLevel = -1;                               /* PICS-1: the slot is overwritten from here */
++    if (picForLevel(id))
++        gSplashPic = picLoad(picForLevel(id));     /* PICS-1: the area's picture (NULL: the usual) */
+     splashBegin();                                 /* OL-3: splash + progress bar */
+     CD_STATE(0x4F00 | id);
+     int32 res = cdLoadToCart((uint16)(CD_FILE_LEVEL_BASE + id));
+@@ -1187,6 +1271,7 @@
+ #endif
+ #ifdef CD32X
+     osSaveSlots();                                 /* SLOTS-1: ask the Sub-CPU once, at start */
++    osUbOnDisc();                                  /* UB-1: likewise (no CD look-ups once music plays) */
+ #endif
+     gameInit();
+ #ifdef CD32X_BENCH
+diff -ruN a/src/platform/32x/sound.cpp b/src/platform/32x/sound.cpp
+--- a/src/platform/32x/sound.cpp	2026-10-22 06:44:20.681027586 -0700
++++ b/src/platform/32x/sound.cpp	2026-10-22 06:44:20.683376975 -0700
+@@ -15,7 +15,7 @@
+ #define SND_CMD_PLAY        45
+ #define SND_CMD_STOP        54
+ #define SND_TRACK_FIRST     2
+-#define SND_TRACK_LAST      80      /* OL-11: 60 + level = the level's own music */
++#define SND_TRACK_LAST      84      /* OL-11: 60 + level = the level's own music (UB-1: up to 84) */
+ #define SND_COMM14          (*(volatile uint16 *)0x2000402E)   /* Sub-CPU: drive status nibble */
+ 
+ static void sndCmd(uint16 cmd)
+@@ -108,6 +108,9 @@
+ #ifndef CD32X_TRACKS_LO
+ #define CD32X_TRACKS_LO 0u
+ #endif
++#ifndef CD32X_TRACKS_X
++#define CD32X_TRACKS_X 0u               /* UB-1: tracks 64-95 (build.sh) */
++#endif
+ #ifndef CD32X_TRACKS_HI
+ #define CD32X_TRACKS_HI 0u
+ #endif
+@@ -115,6 +118,7 @@
+ {
+     if (track < 32) return ((uint32)(CD32X_TRACKS_LO) >> track) & 1;
+     if (track < 64) return ((uint32)(CD32X_TRACKS_HI) >> (track - 32)) & 1;
++    if (track < 96) return ((uint32)(CD32X_TRACKS_X) >> (track - 64)) & 1;
+     return true;
+ }
+ 
+@@ -158,9 +162,11 @@
+        chime) and are ignored, so the level music is not interrupted */
+     if (track < 2 || track == 5 || (track >= 57 && track <= 59))
+     {
+-        if (int32(gLevelID) < 0 || int32(gLevelID) > 20)
++        if (int32(gLevelID) < 0 || int32(gLevelID) > LVL_TR1_END2)
+             return;
+         track = 60 + int32(gLevelID);
++        if (gLevelID > LVL_TR1_10C && !sndOnDisc(track))   /* UB-1: no music of its own on the */
++            track = 60 + ((gLevelID <= LVL_TR1_CAT) ? LVL_TR1_8A : LVL_TR1_10B);   /* disc: Khamoon's, Atlantis's */
+     }
+     else if (track >= 6 && track <= 56 && track != 13 && !sndOnDisc(track))
+         return;                     /* CUES-1: the cues and voices that are on the disc play */
