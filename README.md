@@ -1,6 +1,6 @@
 # Tomb Raider for Sega CD + 32X (OpenLara CD32X)
 
-Tomb Raider (1996) on the **Sega CD32X**, built on XProger's **OpenLara** 32X engine. **Version 1.5** (release notes: `docs/OPENLARA_CD32X_RELEASE.md`).
+Tomb Raider (1996) on the **Sega CD32X**, built on XProger's **OpenLara** 32X engine. **Version 1.6** (release notes: `docs/OPENLARA_CD32X_RELEASE.md`).
 The whole game runs from one CD: each level is loaded from the disc into a 4 MB RAM cart, with
 CD music, PCM sound effects, saving, the cut-scenes with their voices and the game's movies.
 
@@ -25,6 +25,7 @@ Emulators: Kega Fusion cannot emulate the 4MB RAM cart, so the game does not run
 | A loading picture (any size, 16:9 works best) | `OpenLaraCD32X/splash.jpg` |
 | Cut-scene sound: your Tomb Raider 1 **game CD** image (`.nrg`) – the voices are CD audio tracks on it | `tools/nrg_cut_audio.py` → `soundtrack_wav/cut22…cut25` |
 | Movies: the game's `FMV` folder (`*.RPL`) and **ffmpeg** | `tools/make_fmv.sh` → `OpenLaraCD32X/fmv/*.ROQ` |
+| Story cues and voices (optional): the PlayStation soundtrack set's `track06.flac` … `track56.flac` and **ffmpeg** | `PS1MUSIC="<folder>" bash build.sh` → `soundtrack_wav/trNN.wav` (`docs/CONTENT.md`) |
 | Chilly Willy's Sega toolchain (`/opt/toolchains/sega`), Python 3 with Pillow, MinGW (for the packer) | your build machine (Linux / WSL) |
 
 ## Building
@@ -57,8 +58,19 @@ its own place in the RAM cart and stays there – the cart keeps its contents wi
   from the CD. (Also use this after rebuilding the disc with a changed Caves of exactly the
   same size – the only change the check can't see.)
 
-Cart layout: game 0–0.5 MB, Caves 0.5–2 MB, the level being played 2–3.94 MB, settings and
-saves in the last 64 KB. `build.sh` refuses to build if the game or Caves would overlap.
+Cart layout: game 0–384 KB, the 16 save slots 384–512 KB, Caves 0.5–2 MB, the level being played
+(or the movie ring) 2–3.94 MB, settings and the old save in the last 64 KB. `build.sh` refuses to
+build if the game or Caves would overlap.
+
+## Save slots, every movie, creatures, cues (v1.6)
+- **16 save slots** in the passport, each showing its level (SLOTS-1).
+- **All eleven movies**: the seven big ones stream from the CD while they play (15 pictures a
+  second, the sound as the clock), and every movie plays at its place in the story (FMV-2).
+- **Faster cart copies**: the 68000 copies words, not bytes (CARTW-1).
+- **Creatures**: winged mutants fly, gorillas climb, swimming and land rats, Lara's double falls
+  into the pit and stays there.
+- **Story cues and voice lines** from the PlayStation soundtrack (CUES-1, optional).
+See `docs/CONTENT.md`.
 
 ## 8 MB / 16 MB cart test builds
 For the 16MB-PCB-CD32X paged SRAM cart: `CART=8 bash build.sh` or `CART=16 bash build.sh` makes
@@ -105,9 +117,10 @@ original game CD (game tracks 22–25), put on the disc as CD tracks 22–25 by
 `tools/nrg_cut_audio.py`. The sound may start a moment after the picture: the drive first has
 to seek to the track.
 
-**Movies.** On the title menu the passport's Load Game list also has *Movie Core*, *Movie
-Mansion*, *Movie Pyramid* and *Movie Escape* – the game's own FMVs. A movie loads into the RAM
-cart's level slot (red loading bar), then plays at 288 × 224 with its sound. **A, B, C or Start**
+**Movies.** All eleven play at their places in the story (v1.6), and on the title menu the
+passport's Load Game list has all of them, in story order. A small movie loads into the RAM
+cart's level slot (red loading bar); a big one loads its first 1.8 MB, then streams from the CD
+while it plays. Either way it plays at 288 × 224 with its sound. **A, B, C or Start**
 skips it; afterwards you are back in the passport with the title music.
 
 How it works:
@@ -123,14 +136,14 @@ How it works:
   sound is very loud).
 - If a movie can't play, the screen flashes for a second: red = no memory, yellow = not on the
   disc or too big, blue = loading failed, magenta = not a RoQ file.
-- Only movies up to 1984 KB fit the level slot, so `build.sh` puts just those four on the disc.
-  The other seven (CAFE, SNOW, LIFT, VISION, CANYON, PRISON, END) are 6–20 MB; they would need
-  streaming from the CD while they play.
+- Movies up to 1984 KB fit the level slot. The other seven (CAFE, SNOW, LIFT, VISION, CANYON,
+  PRISON, END, 6–20 MB) stream: the level slot becomes a ring of 32 KB slots that the CD keeps
+  filling ahead of the picture and the sound (FMV-2, `docs/CONTENT.md`).
 
 ## Saving
-Saves and settings are stored in the RAM cart (battery-backed), one saved position. Save from the
-passport; load it again from the passport's Load Game page ("Current position").
-Saving is not available in Lara's Home.
+Saves and settings are stored in the RAM cart (battery-backed). Save from the passport into one
+of **16 slots** (each shows its level); load from the passport's Load Game page, where the saved
+slots come first. A v1.5 save stays loadable. Saving is not available in Lara's Home.
 
 ## What is in this version
 - All 15 levels from Caves to the Great Pyramid, plus Lara's Home, chosen from the passport or
@@ -141,19 +154,20 @@ Saving is not available in Lara's Home.
   mutants, centaurs, mummies, Larson, Pierre, the skater, the cowboy, Mr. T, Natla, the Torso
   and Lara's double.
 - The four cut-scenes with their voices, also playable from the passport.
-- Four of the game's movies, playable from the passport on the title menu.
-- Saving and loading, options (sound, music, controls) remembered.
+- All eleven of the game's movies at their places in the story, and in the title passport.
+- 16 save slots, options (sound, music, controls) remembered.
 
 ## Known limitations
-- **Gorillas** do not climb ledges; **water rats** do not dive.
 - Human enemies' darts and bullets hit instantly (no visible projectile; the mutants', centaurs'
   and Natla's shots fly since v1.5); an enemy may occasionally
   shoot through a thin wall.
 - Sound effects: all of them since v1.5 (the PWM mixer, up to 8 at once).
-- The original game's short story cues are not played (not on the album).
+- The story cues and voice lines need the PlayStation soundtrack (`PS1MUSIC=`); without it they
+  are silent.
 - Cut-scene sound can start a moment late (the CD drive seeks to the track).
-- Movies: only 4 of the 11 (the ones that fit the RAM cart), from the title menu only, not yet
-  at their places in the story. *Unfinished Business* is not included.
+- The big movies wait about 16 s for their first 1.8 MB (red bar) before they start.
+- *Unfinished Business* is not included (its levels were never converted).
+- The Midas gold look (Lara turning to gold) is not drawn; the death itself works.
 - About 10–16 frames per second (10–13 in fights) – see **Frame rate** below.
 
 ## Frame rate
@@ -280,6 +294,7 @@ The version is in the file `VERSION` and is shown small in the corner of the loa
 | 1.0 | The whole game from CD: all levels, CD music, PCM sound effects, saving in the RAM cart, all enemies, full passport, loading screen. |
 | 1.1 | Faster: the two SH2s draw separate halves of the screen, game logic runs while the second SH2 is still drawing, and the next frame is prepared without waiting for the screen refresh (fights 7–8 → 9–10 fps, exploring 9–15 fps). Profiler build (`PROF=1`). Version shown on the loading picture. |
 | 1.2 | Fast start: Caves (the title menu) stays in the RAM cart and is not loaded again – hold A+B+C at start to reload it. |
+| 1.6 | 16 save slots in the passport; all eleven movies, the big ones streamed from the CD, each at its place in the story; word copies to the cart; winged mutants fly, gorillas climb, swimming and land rats, Lara's double stays in the pit; the story cues and voices from the PlayStation soundtrack. |
 | 1.5 | Every TR1 trap and moving object, flipmaps, visible projectiles; all sound effects through the PWM and the Music switch; faster span loops (OPT-1/2); the last level resumes from the cart after power-off (RESUME-1); the drive reads ahead while loading (STREAM-1); settings and save area fixes; 8/16 MB cart test builds. |
 | 1.4 | Faster (fights 9–10 → 10–13 fps, exploring 10–16 fps): pauses in the wait loops so the two SH2s don't block each other on the bus, screen clear by the 32X VDP, the per-polygon drawing code in SDRAM, the SH2's divider for cut polygons. |
 | 1.3 | Cut-scenes in the passport, with their voices from the game CD (and fixed: shorter cut-scenes ended at once, a cut-scene could jump to the next level instead of the menu). The game's movies: RoQ player with PWM sound, four movies in the passport. Lara's double, sound effects quieter with distance. |

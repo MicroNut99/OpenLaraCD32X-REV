@@ -37,5 +37,5 @@ Files changed:
 New files (not in the stat above): `src/platform/32x/fmv.inc`, `roq.h`, `roq_read.c`.
 
 Later patches, applied in this order by `OpenLaraCD32X/build.sh` (each only once): `openlara-cart-test.patch`
-(+ `-1to2`), `openlara-opt1.patch`, `openlara-opt2.patch`, `openlara-sfx.patch`, `openlara-objects.patch`
+(+ `-1to2`), `openlara-opt1.patch`, `openlara-opt2.patch`, `openlara-sfx.patch`, `openlara-objects.patch`, `openlara-content.patch` (v1.6)
 (OBJECTS-1, `docs/OBJECTS.md`).

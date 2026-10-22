@@ -1,4 +1,4 @@
-# OpenLara CD32X – Release v1.5
+# OpenLara CD32X – Release v1.6
 
 **Tomb Raider (1996) on Sega CD + 32X**, running from one CD with a battery-backed RAM cart in the 32X.
 It is built on XProger's OpenLara: the fixed-point engine from its Game Boy Advance port, which XProger
@@ -33,17 +33,21 @@ Boot stack documentation and command ledger: https://github.com/MicroNut99/docs
 
 - All 15 levels from Caves to the Great Pyramid, plus Lara's Home, played straight through or picked
   from the passport.
-- **Every enemy**, including Lara's double in Atlantis.
+- **Every enemy**, including Lara's double in Atlantis. Since v1.6 the winged mutants fly, gorillas
+  climb, rats swim and walk, and the double falls into the pit and stays there.
 - **Every trap and moving object** (new in v1.5): rolling balls, spikes, teeth traps, falling ceilings,
   Damocles swords, Thor's hammer and lightning, rolling blocks, drawbridges, the Natla's Mines cabin
   and boat, earthquakes, lava wedges and lava fountains, the Midas hand, mutant eggs, the centaur
   statue, the Scion, fire, and the enemies' visible projectiles. The rooms that change during a level
   (flipmaps) now change.
-- **CD music**: one piece per level (your choice), the secret chime, the title music.
+- **CD music**: one piece per level (your choice), the secret chime, the title music, and (v1.6,
+  optional) the game's own story cues and voice lines from the PlayStation soundtrack.
 - **All sound effects** of every level, through the 32X's PWM sound chip, quieter with distance.
 - The four in-engine **cut-scenes** with their voices, also playable from the passport.
-- Four of the game's **movies** (FMV), playable from the passport on the title menu.
-- **Saving** in the RAM cart: one saved position plus the options, kept with the power off.
+- **All eleven movies** (FMV, v1.6): each plays at its place in the story; the seven big ones stream
+  from the CD while they play. All of them are in the title passport too.
+- **Saving** in the RAM cart: **16 save slots** in the passport (v1.6) plus the options, kept with the
+  power off.
 - **Fast start**: Caves (the title) stays in the cart, and so does the last level played. After power
   on, *Current Position* starts in seconds instead of loading from the CD.
 - 10–16 frames per second exploring, 10–13 in fights (console, v1.4 profiler build; v1.5 adds the
@@ -96,6 +100,10 @@ Boot stack documentation and command ledger: https://github.com/MicroNut99/docs
   level file instead of stopping and seeking for every 32 KB chunk. Sectors that arrive while the 68000
   copies to the cart are kept in a 64 KB ring. The same code runs on the console in OpenJazz CD32X R7
   and Hurrican CD32X P2b (about 2.5× faster loads there). `STREAM=0 bash build.sh` builds the old reads.
+  In emulation: the first level load 40 s → 17 s.
+- **CARTW-1 (v1.6, Sub-CPU, switch `CARTW`):** command 46 copies each chunk to the cart with the
+  68000's word copy (`hw_md.s` command 27, 15 clocks a byte) instead of the byte copy (command 33,
+  42 clocks a byte), in 4 KB pieces. RV is on for a third of the time.
 
 ### 4.2 Frame rate
 - **Screen split:** the two SH2s draw separate halves of the screen and never wait for each other
@@ -135,12 +143,30 @@ Boot stack documentation and command ledger: https://github.com/MicroNut99/docs
 - **Movies (FMV-1):** a RoQ player. The master SH2 decodes the pictures from the cart (decoder from
   *Doom 32X: Resurrection*, MIT) and the slave SH2 plays the DPCM sound through the PWM. 288 × 112 at
   15 frames/s, lines doubled. Four movies fit the level slot.
+- **FMV-2 (v1.6):** **all eleven movies.** The big ones (5–20 MB) stream: the level slot becomes a ring
+  of 60 × 32 KB plus a spare slot (command 46 ring mode, Sub-CPU switch `FMVRING`); the master keeps the
+  CD busy and never lets it overwrite what the decoder or the sound still needs; 1.8 MB load first
+  (red bar). The slave plays the sound from a ring of PWM blocks and reads the cart only while the
+  68000 is not writing it (the Sub-CPU flags its copy in COMM12 bit 15), so the sound has no gaps and
+  is the pictures' clock. Each movie plays at its place in the story (CAFE + SNOW before Caves,
+  MANSION before Lara's Home, LIFT before the Folly, VISION before Khamoon, CANYON before Natla's
+  Mines, PYRAMID before Atlantis, PRISON after Atlantis, END after the Great Pyramid, then the title).
+  CANYON (3 min) streams at 15.0 pictures a second with the sound in real time (emulation).
 
 ### 4.5 Gameplay
 - **ENEMIES-1/2:** lion, puma, gorilla, rat, crocodile, mutants, centaur, mummy, Larson, Pierre, the
   skater (now drawn with his skateboard, v1.5), the cowboy, Mr. T, Natla, the Torso.
 - **DOPPEL-1:** Lara's double in Atlantis mirrors Lara through the room centre, copies her animation,
   hurts Lara when shot, and falls into the pit to open the way on. (It was an empty class before.)
+  v1.6: she dies in the pit and her body stays, as in TR1.
+- **Creatures (v1.6):** the levels' placeholder mutant models get the mutant's model; the winged
+  mutants fly (their own height, flyers' navigation zones); gorillas climb one-block steps; the
+  swimming rat and the land rat change into each other at the water's edge; hatched enemies start
+  in their standing animation.
+- **CUES-1 (v1.6):** the levels' music cues (game tracks 6–21) and voice lines (26–56) play when they
+  are on the disc: `PS1MUSIC="<folder>" bash build.sh` converts them from the PlayStation soundtrack
+  set (`tools/import_tr1_music.py`). The engine knows which tracks the disc has, so a missing cue never
+  stops the level music.
 - **OBJECTS-1 (v1.5):** all missing TR1 traps and objects, ported from the original game's behaviour
   (new file `src/fixed/traps.h`):
   - traps: rolling ball, spikes, teeth trap, falling ceiling, Damocles sword, Thor's hammer and
@@ -165,6 +191,11 @@ Boot stack documentation and command ledger: https://github.com/MicroNut99/docs
 - **SAVE-2 (v1.5):** the Caves and level records moved out of the piece that holds the settings and the
   saved game, so a level load never rewrites your save. A failed record write is retried. The first
   start with v1.5 loads Caves once more.
+- **SLOTS-1 (v1.6, Sub-CPU switch `SLOTS`):** 16 save slots at cart `0x060000`–`0x07FFFF` (8 KB each,
+  between the game and Caves). The save page lists them with their levels; the load page lists the
+  saved ones first; a v1.5 save stays loadable. Command 61 with COMM2 bit 8 writes the slot area and
+  replies `0x101`; with an older Sub-CPU the game keeps the single save. The game's ROM must stay
+  under 384 KB (`build.sh` checks; it is about 270 KB).
 
 ## 5. What was added to the source
 
@@ -174,12 +205,12 @@ toolchain and the Kobo Deluxe CD32X boot framework.
 | Part | Files | Notes |
 |---|---|---|
 | Engine, CD32X platform | `src/platform/32x/main.cpp`, `render.cpp`, `rasterizer.h`, `sound.cpp`, `32x.h`, `Makefile`, `asm/*.i`, `asm/data.s`; new `fmv.inc`, `roq.h`, `roq_read.c`, `sfx.inc`, `carttest.inc`, `bench.inc` | all behind `CD32X` (`make CD32X=1`); the cartridge build is unchanged |
-| Engine, game | `src/fixed/enemy.h`, `inventory.h`, `item.h`, `room.h`, `game.h`, `camera.h`, `common.h`, `object.h`, `lara.h`, `lang/en.h`; new `traps.h` | enemies, double, traps and objects, flipmaps, effects |
-| Patches (applied in order by `build.sh`) | `engine/openlara-cd32x.patch`, `openlara-cart-test.patch` (+ `-1to2`), `openlara-opt1.patch`, `openlara-opt2.patch`, `openlara-sfx.patch`, `openlara-objects.patch` | |
+| Engine, game | `src/fixed/enemy.h`, `inventory.h`, `item.h`, `room.h`, `game.h`, `camera.h`, `common.h`, `object.h`, `lara.h`, `lang/en.h`; new `traps.h` | enemies, double, traps and objects, flipmaps, effects, save slots |
+| Patches (applied in order by `build.sh`) | `engine/openlara-cd32x.patch`, `openlara-cart-test.patch` (+ `-1to2`), `openlara-opt1.patch`, `openlara-opt2.patch`, `openlara-sfx.patch`, `openlara-objects.patch`, `openlara-content.patch` (v1.6) | |
 | SH2 loader | `OpenLaraCD32X/sh2/cdloader_sh2.c` | boot picture, engine copy, SH2 start |
-| Sub-CPU | `OpenLaraCD32X/subcpu/main.c`, `Makefile` | the commands; CMD 68 with `CART=`; STREAM-1 with `STREAM` |
+| Sub-CPU | `OpenLaraCD32X/subcpu/main.c`, `Makefile` | the commands; CMD 68 with `CART=`; STREAM-1, SLOTS-1, FMV-2, CARTW-1 with `STREAM`, `SLOTS`, `FMVRING`, `CARTW` (all off = v1.5's code) |
 | Level converter | `gba/packer` (patched) | `.PKD` level files + `.SND` sound tables |
-| Tools | `prep_openlara_cd.py`, `make_ol_splash.py`, `make_boot_image.py`, `make_music_tracks.py`, `make_sfx_packs.py`, `sfx_bank.py`, `nrg_cut_audio.py`, `make_fmv.sh`, `make_mixed_cd2.py` | disc, music, sound and movie preparation |
+| Tools | `prep_openlara_cd.py`, `make_ol_splash.py`, `make_boot_image.py`, `make_music_tracks.py`, `make_sfx_packs.py`, `sfx_bank.py`, `nrg_cut_audio.py`, `make_fmv.sh`, `make_mixed_cd2.py`, `import_tr1_music.py` (v1.6) | disc, music, sound and movie preparation |
 
 Never changed (the boot stack rule): the boot block, `hw_md.s`, `crt0.s`, `src-md/`, the loader's
 start-up code. Sub-CPU changes only behind a build switch, each recorded in the ledger.
@@ -189,6 +220,10 @@ start-up code. Sub-CPU changes only behind a build switch, each recorded in the 
 |---|---|---|
 | `CART=8` / `CART=16` | off | 8 / 16 MB paged cart test build (section 9) |
 | `STREAM=0` | 1 | Sub-CPU without the drive read-ahead |
+| `SLOTS=0` | 1 | Sub-CPU without the save slot area (one save) |
+| `FMVRING=0` | 1 | Sub-CPU without movie streaming (only the movies that fit) |
+| `CARTW=0` | 1 | Sub-CPU copies to the cart in bytes |
+| `PS1MUSIC="<folder>"` | | add the story cues and voices from the PlayStation soundtrack set |
 | `SFX=pcm` | PWM | no sound banks: the Sega CD PCM effects only |
 | `PROF=1` | off | on-screen profiler |
 | `OPT=0` (engine) | 1 | the v1.4 span loops |
@@ -210,7 +245,9 @@ Full steps (packer, music, cut-scene voices, movies): the repository's `README.m
 | v1.0–v1.4: every level, music, saves, cut-scenes, movies, frame rate | **console** |
 | OPT-1/2, RESUME-1, SFX-1/2, MUSIC-1 | **console** (21 Oct 2026) and emulation |
 | OBJECTS-1, the review fixes, Lara's double, SETTINGS-1, SFX-4, SAVE-2 | emulation – see the results table below; not yet on the console |
-| STREAM-1 | compiled with both settings; the same code is on the console in OpenJazz and Hurrican; not yet run in OpenLara |
+| STREAM-1 | emulation (first level load 40 s → 17 s); the same code is on the console in OpenJazz and Hurrican |
+| v1.6: SLOTS-1, FMV-2, CARTW-1, creatures, story movies | emulation – see `docs/CONTENT.md`; not yet on the console |
+| CUES-1 | compiled; not run (the test discs have no audio tracks) |
 
 | Object | Level | Seen in emulation |
 |---|---|---|
@@ -237,10 +274,11 @@ Full steps (packer, music, cut-scene voices, movies): the repository's `README.m
 | Every level | Caves … the Great Pyramid (15 levels) | each loads from the CD into the cart, Lara stands in it, the picture is right, no crash |
 
 ## 8. Known limitations
-- Gorillas do not climb ledges; water rats do not dive.
-- Only 4 of the 11 movies (those that fit the level slot), from the title menu; *Unfinished Business* is
-  not included.
-- The original game's story music cues are not played (they are not on the album).
+- The big movies wait about 16 s for their first 1.8 MB before they start; a movie's skip button must
+  be held a moment while a chunk loads.
+- *Unfinished Business* is not included (its levels were never converted).
+- The story cues and voice lines need the PlayStation soundtrack set (`PS1MUSIC=`).
+- The Midas gold look (Lara turning to gold) is not drawn; the death itself works.
 - Cut-scene sound may start a moment late (the drive seeks to the track).
 - Some enemy shots (darts, bolts, bullets of human enemies) still hit at once without a visible projectile.
 
@@ -257,7 +295,8 @@ and save piece 15 as scratch. The normal build has no test code.
 | 1.2 | Fast start: Caves stays in the cart |
 | 1.3 | Cut-scenes with voices, movies, Lara's double, effects quieter with distance |
 | 1.4 | REV-1…4: bus pauses, VDP clear, SDRAM drawing code, hardware divider |
-| **1.5** | OPT-1/2 span loops, RESUME-1, all sound effects (PWM), Music switch, every TR1 trap and object, flipmaps, visible projectiles, STREAM-1 faster loading, save area and settings fixes, 8/16 MB cart test builds |
+| 1.5 | OPT-1/2 span loops, RESUME-1, all sound effects (PWM), Music switch, every TR1 trap and object, flipmaps, visible projectiles, STREAM-1 faster loading, save area and settings fixes, 8/16 MB cart test builds |
+| **1.6** | 16 save slots, all eleven movies (streamed, at their story places), word copies to the cart, flying mutants, climbing gorillas, swimming and land rats, the double stays in the pit, story cues and voices; fixes from the review |
 
 ## 11. Credits
 - **XProger** (Timur Gagiev) and contributors – **OpenLara**, and its **Game Boy Advance port**: the

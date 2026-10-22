@@ -50,6 +50,15 @@ extern int  scd_bios_call(int fn, int d1, void *a0);
 #ifndef OL_STREAM
 #define OL_STREAM 0
 #endif
+#ifndef OL_FMVRING
+#define OL_FMVRING 0            /* FMV-2: CMD 46 ring mode for streamed movies (Makefile FMVRING) */
+#endif
+#ifndef OL_CARTW
+#define OL_CARTW 0              /* CARTW-1: CMD 46 copies to the cart in words (Makefile CARTW) */
+#endif
+#ifndef OL_SLOTS
+#define OL_SLOTS 0              /* SLOTS-1: CMD 61 also writes the save slot area (Makefile SLOTS) */
+#endif
 #if OL_STREAM
 extern void scd_stream_start(int lba, int count);
 extern int  scd_stream_sector(void *buf, void *hdr, int spins);
@@ -862,11 +871,28 @@ int main(void)
         else if (cmd == CMD_CHUNK_TO_CART || cmd == CMD_CHUNK_COMPARE) {
             int chunk = do_md_cmd1(MD_CMD_READ_32X_16, 0xA15122);
             int novfy = chunk & 0x8000;          /* OL-13: level loads skip the read-back */
+#if OL_FMVRING
+            /* FMV-2 (OL_FMVRING, Makefile FMVRING=1, the default): COMM2 bit 14 = ring mode for a
+               movie that plays while it streams: file chunk (COMM2 & 0x1FFF) goes to ring slot
+               chunk % 60 of the level slot (60 x 32 KB), or with bit 13 to slot 60 (the copy of
+               slot 0 after the ring's end, so a movie chunk across the wrap stays in one piece).
+               The 68000 copies 4 KB at a time (short RV stalls for the SH2s playing the movie). */
+            int ring = chunk & 0x4000, guard = chunk & 0x2000;
+            chunk &= ring ? 0x1FFF : 0x7FFF;
+#else
             chunk &= 0x7FFF;
+#endif
             int length = do_md_cmd1(MD_CMD_READ_32X_32, 0xA15128);
             int off = chunk * 32768;
             int n = 0, bytes, p, k, bad = 0;
             uint32_t coff = CART_IMG_BASE + (uint32_t)cur_img * CART_SLOT + (uint32_t)off;
+            int piece = 0x4000;
+#if OL_FMVRING
+            if (ring) {
+                coff = CART_IMG_BASE + (uint32_t)cur_img * CART_SLOT + (uint32_t)(guard ? 60 : chunk % 60) * 32768;
+                piece = 0x1000;
+            }
+#endif
 
             if (off < length) n = (length - off + 2047) / 2048;
             if (n > 16) n = 16;
@@ -910,10 +936,32 @@ int main(void)
                 scd_sub_read((void *)0x0C0000, saved_lba + chunk * 16, n);   
 #endif
                 switch_banks();                                   
+#if OL_FMVRING
+                /* FMV-2: COMM12 bit 15 while the cart is written in ring mode: the slave SH2 (the
+                   movie's sound) does not read the cart then, so RV never holds it */
+                if (ring) do_md_cmd2(MD_CMD_WRITE_32X_16, 0xA1512C, 0x8000);
+#endif
+#if OL_CARTW
+                /* CARTW-1 (OL_CARTW, Makefile CARTW=1, the default): the 68000 copies words
+                   (hw_md.s command 27, safe_cart_xfer_w: 15 cycles a byte) instead of bytes
+                   (command 33: 42 cycles a byte).  Every chunk reaches the cart almost 3 times
+                   faster, and RV (the SH2s locked out of the cart) is on for a third of the time.
+                   Command 27 masks the 68000's interrupts, so the pieces are 4 KB (8 ms, less than
+                   a frame: the vblank waits, it is never lost).  Arguments: source, destination. */
+                (void)piece;
+                if (cmd != CMD_CHUNK_COMPARE)
+                    for (p = 0; p < bytes; p += 0x1000)
+                        do_md_cmd3(MD_CMD_SAFE_CART_XFER_W, 0x200000 + p, 0x400000 + coff + p,
+                                   bytes - p < 0x1000 ? bytes - p : 0x1000);
+#else
                 if (cmd != CMD_CHUNK_COMPARE)          /* CMD 47: compare only, no write */
-                    for (p = 0; p < bytes; p += 0x4000)
+                    for (p = 0; p < bytes; p += piece)
                         do_md_cmd3(MD_CMD_CHILLY_RV_MEMCPY, 0x400000 + coff + p, 0x200000 + p,
-                                   bytes - p < 0x4000 ? bytes - p : 0x4000);
+                                   bytes - p < piece ? bytes - p : piece);
+#endif
+#if OL_FMVRING
+                if (ring) do_md_cmd2(MD_CMD_WRITE_32X_16, 0xA1512C, 0);
+#endif
 #if CART_VERIFY_READBACK
                 do_md_cmd2(MD_CMD_WRITE_32X_16, 0xA15104, (int)(coff >> 20) & 3);   
                 for (p = 0; !novfy && p < bytes; p += 0x4000)
@@ -982,6 +1030,9 @@ int main(void)
 #endif
                     n == 0 ? "EMPTY" : bad ? "BAD" : (CART_VERIFY_READBACK ? "OK" : "NOVFY"));
             print_diag(temp, tbuf, 2, 13);
+#if OL_FMVRING
+            if (ring) bad |= 0x100;              /* FMV-2: "ring mode known" - the SH2 tests it */
+#endif
             do_md_cmd2(MD_CMD_WRITE_32X_16, 0xA1512C, bad);   /* HW4: 16-bit COMM12 - COMM14 is the heartbeat */
             do_md_cmd2(MD_CMD_WRITE_32X_16, 0xA15120, 0);
         }
@@ -1121,8 +1172,18 @@ int main(void)
                0x3F0000 + COMM2 * 4 KB.  The SH2 cannot write the cart; the 68000 can (RV method,
                exactly as CMD 46).  Read back through the 32X window and compared.
                Reply COMM12: 1 ok, 0 failed. */
+#if OL_SLOTS
+            /* SLOTS-1 (OL_SLOTS, Makefile SLOTS=1, the default): COMM2 bit 8 set = a piece of the
+               save slot area, cart 0x060000 + (COMM2 & 31) * 4 KB (OpenLara's 16 save slots, between
+               the game and Caves); reply 0x101 instead of 1, so the SH2 knows the slots are there. */
+            int piece = do_md_cmd1(MD_CMD_READ_32X_16, 0xA15122);
+            int slot_area = piece & 0x100;
+            uint32_t coff = slot_area ? CART_IMG_BASE + 0x060000 + (uint32_t)(piece & 31) * 4096
+                                      : CART_IMG_BASE + 0x3F0000 + (uint32_t)(piece & 15) * 4096;
+#else
             int piece = do_md_cmd1(MD_CMD_READ_32X_16, 0xA15122) & 15;
             uint32_t coff = CART_IMG_BASE + 0x3F0000 + (uint32_t)piece * 4096;
+#endif
             int k, ok = 1;
             volatile uint8_t *wr = (volatile uint8_t *)0x0C0000;
             for (k = 0; k < 4096; k++) wr[k] = bram_buf[k];
@@ -1136,6 +1197,9 @@ int main(void)
                 for (k = 0; k < 4096; k++)
                     if (cart[k] != bram_buf[k]) { ok = 0; break; }
             }
+#if OL_SLOTS
+            if (ok && slot_area) ok = 0x101;        /* SLOTS-1 */
+#endif
             do_md_cmd2(MD_CMD_WRITE_32X_16, 0xA1512C, ok);
             do_md_cmd2(MD_CMD_WRITE_32X_16, 0xA15120, 0);
         }

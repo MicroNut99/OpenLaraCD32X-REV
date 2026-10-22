@@ -1,0 +1,1271 @@
+diff -ruN a/src/fixed/common.h b/src/fixed/common.h
+--- a/src/fixed/common.h	2026-10-22 03:38:05.587077406 -0700
++++ b/src/fixed/common.h	2026-10-22 03:38:05.589830904 -0700
+@@ -2491,6 +2491,13 @@
+     , STR_CD32X_FMV_MANSION
+     , STR_CD32X_FMV_PYRAMID
+     , STR_CD32X_FMV_ESCAPE
++    , STR_CD32X_FMV_CAFE        // FMV-2: the movies that stream
++    , STR_CD32X_FMV_SNOW
++    , STR_CD32X_FMV_LIFT
++    , STR_CD32X_FMV_VISION
++    , STR_CD32X_FMV_CANYON
++    , STR_CD32X_FMV_PRISON
++    , STR_CD32X_FMV_END
+ #ifdef CD32X_CART_MB
+ // CART-2: the cart test, in the title's Detail options (CART=8 / CART=16 builds only)
+     , STR_CD32X_CART_TEST
+@@ -2924,6 +2931,9 @@
+ bool osSaveSettings();
+ bool osLoadSettings();
+ bool osCheckSave();
++int32 osSaveSlots();                // SLOTS-1 (CD32X): the number of save slots, 0 = one save
++int32 osSaveSlotLevel(int32 slot);  // SLOTS-1: the level in a slot (-1 = the old save), -1 = empty
++extern int32 gSaveSlot;             // SLOTS-1: the slot to load / save
+ bool osSaveGame();
+ bool osLoadGame();
+ void osJoyVibrate(int32 index, int32 L, int32 R);
+diff -ruN a/src/fixed/enemy.h b/src/fixed/enemy.h
+--- a/src/fixed/enemy.h	2026-10-22 03:38:05.598872580 -0700
++++ b/src/fixed/enemy.h	2026-10-22 03:38:05.601349722 -0700
+@@ -510,6 +510,21 @@
+         tinfo.target->hit(damage, offset, 0);
+     }
+ 
++    // FLY-1: the path zone follows the step height the AI set (TR1 switches LOT.fly the same
++    // way): 256 / 512 ground, anything higher flying.  Before, the zone was fixed when the
++    // enemy woke up, so the winged mutant and Natla never left the ground.
++    void navUpdateZone()
++    {
++        int32 step = extraE->nav.stepHeight;
++        uint32 want = (step == 256) ? ZONE_GROUND_1 : ((step == 512) ? ZONE_GROUND_2 : ZONE_FLY);
++        if (want == extraE->nav.zoneType)
++            return;
++        const Sector* sector = room->getSector(pos.x, pos.z);
++        if (sector->boxIndex != NO_BOX) {
++            extraE->nav.init(sector->boxIndex);
++        }
++    }
++
+     void updateLocation()
+     {
+         Room* oldRoom = room;
+@@ -567,6 +582,8 @@
+                 angle.x = angleLerp(angle.x, pitch, ANGLE_1);
+ 
+                 updateRoom();
++            } else if (keepHeight()) {
++                // CLIMB-1: an animation moves it (the gorilla's climb): no snapping to the floor
+             } else {
+                 if (pos.y > roomFloor) {
+                     pos.y = roomFloor;
+@@ -713,6 +730,7 @@
+         }
+ 
+         goalState = updateState();
++        navUpdateZone();                                // FLY-1: flying needs the fly zone
+ 
+         animProcess();
+ 
+@@ -738,6 +756,11 @@
+         return goalState;
+     }
+ 
++    virtual bool keepHeight()       // CLIMB-1: true while an animation carries the enemy up
++    {
++        return false;
++    }
++
+     virtual void initExtra()
+     {
+         // empty
+@@ -803,7 +826,9 @@
+     enum {
+         CENTER_X  = 36 * 1024,
+         CENTER_Z  = 60 * 1024,
+-        ANIM_FALL = 34              // Lara's model: falling forward
++        ANIM_FALL = 34,             // Lara's model: falling forward
++        STATE_DEATH_LARA = 8,       // Lara's DEATH state (TR1 AS_DEATH)
++        DEAD_MARK = 0xD1ED          // DOPPEL-2: in aggression (unused by her): she has fallen
+     };
+ 
+     virtual void activate()
+@@ -829,6 +854,18 @@
+         if (!lara)
+             return;
+ 
++        if (aggression == DEAD_MARK)                // DOPPEL-2: dying / dead in the pit
++        {
++            animProcess();
++            pos.y = roomFloor;
++            // the death animation over - or 3 s after landing in any case (her animation must
++            // never keep her active for good)
++            if ((state == STATE_DEATH_LARA && animIsEnd(0)) || ++timer > 90) {
++                deactivate();                       // stays where she lies
++            }
++            return;
++        }
++
+         if (!(flags & ITEM_FLAG_GRAVITY))
+         {
+             pos.x = CENTER_X * 2 - lara->pos.x;     // mirror through the room centre
+@@ -857,14 +894,18 @@
+         {
+             animProcess();                          // falls (gravity in move())
+             updateRoom();
++            checkTrigger(gLastFloorData, NULL);     // TR1 tests the triggers every falling frame
+ 
+             if (pos.y >= roomFloor)
+             {
++                // DOPPEL-2: TR1 leaves her body in the pit: the landing turns into Lara's death
++                // (goal state DEATH); when that animation is over she stops, still visible
+                 pos.y = roomFloor;
+-                checkTrigger(gLastFloorData, NULL); // the trigger under her (set by updateRoom)
+-                flags &= ~(ITEM_FLAG_GRAVITY | ITEM_FLAG_STATUS);
+-                flags |= ITEM_FLAG_STATUS_INVISIBLE;
+-                deactivate();
++                vSpeed = 0;
++                flags &= ~ITEM_FLAG_GRAVITY;
++                goalState = STATE_DEATH_LARA;
++                aggression = DEAD_MARK;
++                timer = 0;
+             }
+         }
+     }
+@@ -1604,7 +1645,9 @@
+ 
+ struct Gorilla : Enemy
+ {
+-    // ENEMIES-1: gorilla behaviour (ported from the full engine; no wall climbing / side steps)
++    // ENEMIES-1: gorilla behaviour (ported from the full engine)
++    // CLIMB-1: it climbs up a step of more than 384 units (TR1 Ape_Vault): set at the edge,
++    // facing the wall, with the climb animation, which lifts it up by itself.
+     enum {
+         HIT_MASK        = 0x00FF00,
+         DIST_ATTACK     = 430,
+@@ -1629,8 +1672,47 @@
+         STATE_CLIMB
+     };
+ 
++    enum {
++        ANIM_CLIMB      = 19
++    };
++
+     Gorilla(Room* room) : Enemy(room, START_HEALTH, 341, 250, AGGRESSION_LVL_MAX) {}
+ 
++    virtual bool keepHeight()
++    {
++        return state == STATE_CLIMB;
++    }
++
++    virtual void update()
++    {
++        vec3i old = pos;
++        int32 oldFloor = roomFloor;
++        bool climbing = (state == STATE_CLIMB);
++
++        Enemy::update();
++
++        if (climbing || health <= 0 || !extraE || state == STATE_CLIMB)
++            return;
++        if (roomFloor >= oldFloor - 384)        // TR1: pos.y > y - STEP_L * 3 / 2
++            return;
++
++        int32 ox = old.x >> 10, oz = old.z >> 10;
++        int32 cx = pos.x >> 10, cz = pos.z >> 10;
++        if ((ox == cx) == (oz == cz))           // not one sector straight across
++            return;
++
++        if (oz == cz) {
++            if (ox < cx) { pos.x = (cx << 10) - 75; angle.y = ANGLE_90; }
++            else         { pos.x = (ox << 10) + 75; angle.y = -ANGLE_90; }
++        } else {
++            if (oz < cz) { pos.z = (cz << 10) - 75; angle.y = 0; }
++            else         { pos.z = (oz << 10) + 75; angle.y = ANGLE_180; }
++        }
++        pos.y = oldFloor;
++        animSet(level.models[type].animIndex + ANIM_CLIMB, true);
++        updateRoom();
++    }
++
+     virtual void hit(int32 damage, const vec3i &point, int32 soundId)
+     {
+         Enemy::hit(damage, point, soundId);
+@@ -1749,6 +1831,57 @@
+ 
+     Rat(Room* room) : Enemy(room, 5, 204, 200, AGGRESSION_LVL_2) {}
+ 
++    // RAT-1: as in TR1, a rat that reaches water becomes a water rat (vole) swimming on the
++    // surface, and a water rat that reaches land becomes a rat again.  Before, the water rat
++    // walked on the bottom of the pool and a rat never went into the water.
++    virtual void initExtra()
++    {
++        if (type == ITEM_RAT_WATER) {           // swims: any height, the fly (water) zone
++            extraE->nav.stepHeight = 20 * 1024;
++            extraE->nav.dropHeight = -20 * 1024;
++            extraE->nav.vSpeed = 32;
++        } else {
++            extraE->nav.stepHeight = 256;
++            extraE->nav.dropHeight = -256;
++            extraE->nav.vSpeed = 0;
++        }
++    }
++
++    void becomes(ItemType t, int32 y)
++    {
++        if (level.models[t].count <= 0)
++            return;                             // the level has no model for it
++        type = t;
++        animSet(level.models[t].animIndex, true);
++        pos.y = y;
++        if (extraE) {
++            initExtra();                        // its zone follows (navUpdateZone)
++        }
++        updateRoom();
++    }
++
++    virtual void update()
++    {
++        Enemy::update();
++
++        if (health <= 0 || (flags & ITEM_FLAG_STATUS) == ITEM_FLAG_STATUS_INVISIBLE)
++            return;
++
++        int32 surface = getWaterLevel();
++        if (type == ITEM_RAT_LAND)
++        {
++            if (surface != WALL && pos.y >= surface)
++                becomes(ITEM_RAT_WATER, surface);
++        }
++        else if (type == ITEM_RAT_WATER)
++        {
++            if (surface == WALL)
++                becomes(ITEM_RAT_LAND, roomFloor);
++            else
++                pos.y = surface;                // on the surface
++        }
++    }
++
+     virtual void hit(int32 damage, const vec3i &point, int32 soundId)
+     {
+         Enemy::hit(damage, point, SND_HIT_RAT);
+@@ -2099,7 +2232,39 @@
+         STATE_FLY
+     };
+ 
+-    Mutant(Room* room) : Enemy(room, 50, 341, 150, AGGRESSION_LVL_MAX) {}
++    // MUTANT-1: TR1 has one mutant model (the winged one, MUTANT_1); the shooter (MUTANT_2) and
++    // the ground mutant (MUTANT_3) borrow it with the wings hidden (InitialiseWarrior2:
++    // mesh bits 0xFFE07FFF).  In the levels their own models are 1-mesh placeholders with no
++    // animations, so an egg's or a level's MUTANT_2/3 stood still, invisible.  They now use
++    // MUTANT_1's model; which one it is lives in visibleMask: wing meshes (15-20) shown = the
++    // flyer, bit 31 clear = the ground mutant (no shots).  The model has 27 meshes, so bits
++    // 27-31 are never drawn.
++    enum {
++        MASK_NO_WINGS   = 0xFFE07FFF,
++        MASK_WINGS      = 0x001F8000,
++        MASK_SHOOTER    = 0x80000000
++    };
++
++    Mutant(Room* room) : Enemy(room, 50, 341, 150, AGGRESSION_LVL_MAX)
++    {
++        if (type != ITEM_MUTANT_1)
++        {
++            uint32 mask = (type == ITEM_MUTANT_3) ? (MASK_NO_WINGS & ~MASK_SHOOTER) : MASK_NO_WINGS;
++            if (level.models[type].count < level.models[ITEM_MUTANT_1].count)
++            {
++                type        = ITEM_MUTANT_1;                // its model and animations
++                animIndex   = level.models[type].animIndex;
++                frameIndex  = level.anims[animIndex].frameBegin;
++                state       = uint8(level.anims[animIndex].state);
++                nextState   = state;
++                goalState   = state;
++            }
++            visibleMask = mask;
++        }
++    }
++
++    bool isFlyer() const { return (visibleMask & MASK_WINGS) == MASK_WINGS; }
++    bool isShooter() const { return (visibleMask & MASK_SHOOTER) != 0; }
+ 
+     virtual int32 updateState()
+     {
+@@ -2109,8 +2274,8 @@
+         if (nextState == state)
+             nextState = STATE_NONE;
+ 
+-        bool flyer = false;
+-        bool shooter = !(false);
++        bool flyer = isFlyer();                         // MUTANT-1: was always false
++        bool shooter = isShooter();
+ 
+         bool shootFar = shooter && tinfo.front && (abs(tinfo.angle) < ANGLE(45)) &&
+                         (tinfo.dist > DIST_SHOT || !checkZone()) && canSee(8192);
+diff -ruN a/src/fixed/game.h b/src/fixed/game.h
+--- a/src/fixed/game.h	2026-10-22 03:38:05.610652324 -0700
++++ b/src/fixed/game.h	2026-10-22 03:38:05.613132930 -0700
+@@ -351,6 +351,17 @@
+ 
+     if ((gNextLevel != LVL_MAX) && (inventory.state == INV_STATE_NONE))
+     {
++    #ifdef CD32X
++        extern void osStoryMovies(int32 prev, int32 next);    // FMV-2: main.cpp
++        if (gNextLevel != LVL_LOAD) {
++            osStoryMovies(gLevelID, gNextLevel);    // the game's movies at their places
++        }
++        // FMV-2: after the Great Pyramid (and its END movie) the game is over: back to the
++        // title.  Unfinished Business was not converted; osLoadLevel used to load Caves for it.
++        if (gNextLevel > LVL_TR1_10C && gNextLevel < LVL_LOAD) {
++            gNextLevel = LVL_TR1_TITLE;
++        }
++    #endif
+         gLevelID = gNextLevel;
+         gNextLevel = LVL_MAX;
+         if (gLevelID == LVL_LOAD) {
+diff -ruN a/src/fixed/inventory.h b/src/fixed/inventory.h
+--- a/src/fixed/inventory.h	2026-10-22 03:38:05.624253119 -0700
++++ b/src/fixed/inventory.h	2026-10-22 03:38:05.626955347 -0700
+@@ -204,7 +204,8 @@
+         OPT_BAR,
+         OPT_SWITCH,
+         OPT_VALUE,
+-        OPT_TEXT
++        OPT_TEXT,
++        OPT_SLOT        // SLOTS-1: a save slot, value = CD32X_SLOT_BASE + slot (16 = the old save)
+     };
+ 
+     #define OPTION(t,s,v)\
+@@ -218,6 +219,28 @@
+     #define OPTION_BAR(s,v)      optionsHeight += 18; OPTION(OPT_BAR, s, v)
+     #define OPTION_SWITCH(s,v)   optionsHeight += 18; OPTION(OPT_SWITCH, s, v)
+     #define OPTION_TEXT(s)       optionsHeight += 18; OPTION(OPT_TEXT, s, 0)
++    #define OPTION_SLOT(v)       optionsHeight += 18; OPTION(OPT_SLOT, STR_EMPTY, v)
++    #define CD32X_SLOT_BASE      2000    // SLOTS-1: option value of save slot 0
++    #define CD32X_SLOT_OLD       16      // SLOTS-1: the old single save (gSaveSlot -1)
++
++#ifdef CD32X
++    int32 loadSel;          // SLOTS-1: the load page's default entry
++
++    static StringID levelName(int32 level)      // SLOTS-1: a saved level's title
++    {
++        static const struct { uint8 id; StringID str; } names[] = {
++            { LVL_TR1_GYM, STR_TR1_GYM },
++            { LVL_TR1_1, STR_TR1_LEVEL1 }, { LVL_TR1_2, STR_TR1_LEVEL2 }, { LVL_TR1_3A, STR_TR1_LEVEL3A },
++            { LVL_TR1_3B, STR_TR1_LEVEL3B }, { LVL_TR1_4, STR_TR1_LEVEL4 }, { LVL_TR1_5, STR_TR1_LEVEL5 },
++            { LVL_TR1_6, STR_TR1_LEVEL6 }, { LVL_TR1_7A, STR_TR1_LEVEL7A }, { LVL_TR1_7B, STR_TR1_LEVEL7B },
++            { LVL_TR1_8A, STR_TR1_LEVEL8A }, { LVL_TR1_8B, STR_TR1_LEVEL8B }, { LVL_TR1_8C, STR_TR1_LEVEL8C },
++            { LVL_TR1_10A, STR_TR1_LEVEL10A }, { LVL_TR1_10B, STR_TR1_LEVEL10B }, { LVL_TR1_10C, STR_TR1_LEVEL10C },
++        };
++        for (int32 i = 0; i < int32(sizeof(names) / sizeof(names[0])); i++)
++            if (names[i].id == level) return names[i].str;
++        return STR_CURRENT_POSITION;
++    }
++#endif
+ 
+     struct Option
+     {
+@@ -226,7 +249,7 @@
+         int32 value;
+     };
+ 
+-    Option options[32];
++    Option options[64];     // SLOTS-1 / FMV-2: was 32 (levels, cut-scenes, 11 movies, up to 17 saves)
+ 
+     void init()
+     {
+@@ -827,9 +850,17 @@
+         }
+     }
+ 
++#ifdef CD32X
++    bool saveError;         // SLOTS-1: the save page shows the error message
++#endif
++
+     void onPassport()
+     {
++    #ifdef CD32X
++        if ((passportPage == PASSPORT_PAGE_SAVE_GAME) && saveError) // error message
++    #else
+         if ((passportPage == PASSPORT_PAGE_SAVE_GAME) && (optionsCount > 0)) // error message
++    #endif
+         {
+             if (lara->isKeyHit(IN_ACTION) || lara->isKeyHit(IN_JUMP))
+             {
+@@ -872,7 +903,14 @@
+             {
+             #ifdef CD32X
+                 #define CD32X_MOVIE_BASE 1000   /* FMV-1: option value 1000 + movie */
+-                if (opt.value >= CD32X_MOVIE_BASE)
++                if (opt.value >= CD32X_SLOT_BASE)       /* SLOTS-1: a saved game */
++                {
++                    gSaveSlot = (opt.value - CD32X_SLOT_BASE == CD32X_SLOT_OLD) ? -1 : (opt.value - CD32X_SLOT_BASE);
++                    nextLevel(LVL_LOAD);
++                    frameTarget = 0;
++                    nextState = INV_STATE_CLOSE;
++                }
++                else if (opt.value >= CD32X_MOVIE_BASE)
+                 {
+                     extern bool osPlayVideo(int32 n);   /* main.cpp / fmv.inc */
+                     osPlayVideo(opt.value - CD32X_MOVIE_BASE);  /* then back to this page */
+@@ -893,8 +931,16 @@
+             
+             if (passportPage == PASSPORT_PAGE_SAVE_GAME)
+             {
++            #ifdef CD32X
++                if (optionsCount > 0 && opt.type == OPT_SLOT) {   /* SLOTS-1: the chosen slot */
++                    gSaveSlot = opt.value - CD32X_SLOT_BASE;
++                }
++            #endif
+                 if (!gameSave())
+                 {
++                #ifdef CD32X
++                    saveError = true;
++                #endif
+                     optionsHeight = 4;
+                     optionsCount = 0;
+                     optionIndex = OPT_ID_OK;
+@@ -1258,6 +1304,9 @@
+ 
+     void initOptions()
+     {
++    #ifdef CD32X
++        saveError = false;
++    #endif
+         optionsCount = 0;
+         optionIndex = 0;
+         optionsWidth = 216;
+@@ -1272,6 +1321,24 @@
+                 if (passportPage == PASSPORT_PAGE_LOAD_GAME)
+                 {
+                 #ifdef CD32X
++                    /* SLOTS-1: the saved games first (each slot in use, and the old single save) */
++                    {
++                        int32 n = osSaveSlots(), sel = -1;
++                        for (int32 i = 0; i < n; i++) {
++                            if (osSaveSlotLevel(i) >= 0) {
++                                if (i == gSaveSlot || sel < 0) sel = optionsCount;
++                                OPTION_SLOT(CD32X_SLOT_BASE + i);
++                            }
++                        }
++                        if (osSaveSlotLevel(-1) >= 0) {
++                            if (gSaveSlot < 0 || sel < 0) sel = optionsCount;
++                            OPTION_SLOT(CD32X_SLOT_BASE + CD32X_SLOT_OLD);
++                        }
++                        if (optionsCount) {
++                            OPTION_SPACE();
++                        }
++                        loadSel = sel;
++                    }
+                     /* CD32X passport: every level is on the disc */
+                     static const struct { LevelID id; StringID str; } passportLevels[] = {
+                         { LVL_TR1_1, STR_TR1_LEVEL1 },
+@@ -1303,22 +1370,49 @@
+                     if (gLevelID == LVL_TR1_TITLE)
+                     {
+                         OPTION_SPACE();
++                        /* FMV-2: all eleven, in story order */
+                         OPTION_BTN(STR_CD32X_FMV_CORE, CD32X_MOVIE_BASE + 0);
++                        OPTION_BTN(STR_CD32X_FMV_ESCAPE, CD32X_MOVIE_BASE + 9);
++                        OPTION_BTN(STR_CD32X_FMV_CAFE, CD32X_MOVIE_BASE + 2);
+                         OPTION_BTN(STR_CD32X_FMV_MANSION, CD32X_MOVIE_BASE + 1);
++                        OPTION_BTN(STR_CD32X_FMV_SNOW, CD32X_MOVIE_BASE + 3);
++                        OPTION_BTN(STR_CD32X_FMV_LIFT, CD32X_MOVIE_BASE + 4);
++                        OPTION_BTN(STR_CD32X_FMV_VISION, CD32X_MOVIE_BASE + 5);
++                        OPTION_BTN(STR_CD32X_FMV_CANYON, CD32X_MOVIE_BASE + 6);
+                         OPTION_BTN(STR_CD32X_FMV_PYRAMID, CD32X_MOVIE_BASE + 7);
+-                        OPTION_BTN(STR_CD32X_FMV_ESCAPE, CD32X_MOVIE_BASE + 9);
++                        OPTION_BTN(STR_CD32X_FMV_PRISON, CD32X_MOVIE_BASE + 8);
++                        OPTION_BTN(STR_CD32X_FMV_END, CD32X_MOVIE_BASE + 10);
+                     }
+                 #else
+                     OPTION_BTN(STR_TR1_LEVEL1, LVL_TR1_1);
+                     OPTION_BTN(STR_TR1_LEVEL2, LVL_TR1_2);
+                 #endif
++                #ifdef CD32X
++                    if (loadSel >= 0) {
++                        optionIndex = loadSel;          /* SLOTS-1: the last used save */
++                    }
++                #else
+                     if (osCheckSave())
+                     {
+                         OPTION_SPACE();
+                         OPTION_BTN(STR_CURRENT_POSITION, LVL_LOAD);
+                         optionIndex = optionsCount - 1;
+                     }
++                #endif
+                 }
++            #ifdef CD32X
++                else if (passportPage == PASSPORT_PAGE_SAVE_GAME && gLevelID != LVL_TR1_GYM)
++                {
++                    /* SLOTS-1: pick the slot to write (none: the old single save, at once) */
++                    int32 n = osSaveSlots(), sel = -1;
++                    for (int32 i = 0; i < n; i++) {
++                        if (i == gSaveSlot) sel = optionsCount;
++                        if (sel < 0 && gSaveSlot < 0 && osSaveSlotLevel(i) < 0) sel = optionsCount;
++                        OPTION_SLOT(CD32X_SLOT_BASE + i);
++                    }
++                    optionIndex = (sel >= 0) ? sel : 0;
++                }
++            #endif
+                 break;
+             }
+             case SLOT_DETAIL:
+@@ -1444,6 +1538,25 @@
+                     drawText(0, y + 16, STR[opt.str], TEXT_ALIGN_CENTER);
+                     break;
+                 }
++            #ifdef CD32X
++                case OPT_SLOT:          /* SLOTS-1: "3  Lost Valley", "3  -" (empty), "Old  ..." */
++                {
++                    int32 slot = opt.value - CD32X_SLOT_BASE;
++                    int32 level = osSaveSlotLevel(slot == CD32X_SLOT_OLD ? -1 : slot);
++                    char buf[8];
++                    int32 k = 0;
++                    if (slot == CD32X_SLOT_OLD) {
++                        buf[k++] = 'O'; buf[k++] = 'l'; buf[k++] = 'd';
++                    } else {
++                        if (slot + 1 >= 10) buf[k++] = char('0' + (slot + 1) / 10);
++                        buf[k++] = char('0' + (slot + 1) % 10);
++                    }
++                    buf[k] = 0;
++                    drawText((FRAME_WIDTH - w) / 2 + 6, y + 16, buf, TEXT_ALIGN_LEFT);
++                    drawText(12, y + 16, (level >= 0) ? STR[levelName(level)] : "-", TEXT_ALIGN_CENTER);
++                    break;
++                }
++            #endif
+             }
+ 
+             y += 18;
+diff -ruN a/src/fixed/lang/en.h b/src/fixed/lang/en.h
+--- a/src/fixed/lang/en.h	2026-10-22 03:38:05.636393129 -0700
++++ b/src/fixed/lang/en.h	2026-10-22 03:38:05.638614889 -0700
+@@ -400,6 +400,13 @@
+     , "Movie Mansion"
+     , "Movie Pyramid"
+     , "Movie Escape"
++    , "Movie Cafe"                  // FMV-2
++    , "Movie Snow"
++    , "Movie Lift"
++    , "Movie Vision"
++    , "Movie Canyon"
++    , "Movie Prison"
++    , "Movie End"
+ #ifdef CD32X_CART_MB
+ // CART-2: the cart test (CART=8 / CART=16 builds only)
+     , "Cart Test"
+diff -ruN a/src/platform/32x/fmv.inc b/src/platform/32x/fmv.inc
+--- a/src/platform/32x/fmv.inc	2026-10-22 03:38:05.669048410 -0700
++++ b/src/platform/32x/fmv.inc	2026-10-22 03:38:05.688599648 -0700
+@@ -23,6 +23,24 @@
+  * --------------------------------------------------------------------------------------- */
+ #include "roq.h"
+ 
++/* ---------------------------------------------------------------------------------------
++ * FMV-2: every movie plays, the big ones while they stream from the CD.  The level slot is a
++ *   ring of 60 x 32 KB (0x200000-0x3DFFFF) plus slot 60, a copy of slot 0, so a RoQ chunk
++ *   across the ring's end is still one piece (0x3E0000-0x3E7FFF, before the save area).
++ *   CMD 46 in ring mode (subcpu/main.c FMV-2: COMM2 bit 14, bit 13 = into slot 60) writes
++ *   file chunk c to slot c % 60; the 68000 copies 4 KB at a time, so the SH2s reading the
++ *   cart wait at most a few ms.  The master sends the next chunk without waiting for it
++ *   (fmvPump, once a frame and while it waits for data), never into a slot the decoder or
++ *   the slave's sound has not finished with.  Before the movie starts, up to 58 chunks
++ *   (1.8 MB) are loaded with the red bar: the stream is a little slower than the biggest
++ *   movies use, and that lead lasts longer than they do.
++ *   A Sub-CPU without FMV-2 writes nothing in ring mode: then only movies that fit the slot
++ *   play, loaded whole as before.
++ * --------------------------------------------------------------------------------------- */
++#define FMV_RING_SLOTS      60
++#define FMV_RING            ((int32)FMV_RING_SLOTS << 15)
++#define FMV_PRELOAD         (FMV_RING_SLOTS - 2)
++
+ #define FMV_FILE_BASE       300                 /* subcpu/main.c: 300 + movie -> slot 16 */
+ #define FMV_MAX_LEN         0x1F0000            /* the level slot, up to the save area   */
+ #define MARS_CMD_FMV_AUDIO  0x7A5C              /* slave command: play the movie's sound */
+@@ -38,57 +56,87 @@
+ void renderScratchDone();                       /*        ... given back (ordering table 0) */
+ 
+ static int32 gFmvLen = 0;                       /* the movie's length, for the slave        */
++static int32 gFmvRing = 0;                      /* FMV-2: 1 = streamed into the ring        */
++static int32 gFmvAvail = 0;                     /* FMV-2: file bytes in the cart (shared)   */
++static int32 gFmvSlaveOff = 0;                  /* FMV-2: the slave's place in the file     */
++static int32 gFmvPlayed = 0;                    /* FMV-2: samples the PWM has played (shared) */
++
++static const uint8* fmvAt(int32 off, bool through)  /* FMV-2: file offset -> the cart */
++{
++    if (FMV_SHARED(gFmvRing))
++        off %= FMV_RING;
++    uint32 a = (uint32)CD_LEVEL_CART + (uint32)off;
++    return (const uint8*)(through ? (a | 0x20000000) : a);
++}
+ static int32 gFmvStop = 0;                      /* master -> slave: stop the sound          */
+ static uint16 gFmvSnd[2][FMV_SAMPLES] __attribute__((aligned(16)));
++/* FMV-2: the sound plays from a ring of PWM blocks: gFmvSnd's two, then as many as fit after the
++   picture copy in the borrowed lists, then main.cpp's save buffer (csBuf, 4 KB: 6 blocks) - 8 or
++   more blocks, at least 115 ms.  The slave fills the
++   ring only while the 68000 is not writing the cart (the Sub-CPU sets COMM12 bit 15 around its
++   copy, FMV-2 ring mode), so it is never held by RV while a block runs out: the sound has no
++   gaps, and it is the pictures' clock. */
++#define FMV_SND_BLOCKS      12
++#define FMV_CD_COPYING      (*(volatile uint16 *)0x2000402C & 0x8000)   /* COMM12, from the Sub-CPU */
++static uint16* gFmvSndBlock[FMV_SND_BLOCKS];    /* set by the master before the sound starts */
++static int32 gFmvSndBlocks = 2;
++static int32 gFmvHolds = 0;                     /* FMV-2: blocks the sound had to hold (test) */
+ 
+ /* ----------------------------------------------------------------------------- the slave */
+ struct FmvAudio
+ {
+-    const uint8* p;                             /* next chunk header in the cart */
+-    const uint8* end;
++    int32 off;                                  /* FMV-2: next byte in the file */
++    int32 end;
+     int32 rem;                                  /* samples left in the current sound chunk */
+     int32 val;                                  /* DPCM predictor 0..65535 */
+ };
+ 
+-static void fmvAudioFill(FmvAudio &a, uint16* dst)  /* one block of PWM samples */
++static int32 fmvAudioFill(FmvAudio &a, uint16* dst)  /* one block of PWM samples; returns how
++                                                       many came from the movie (the rest: held) */
+ {
+-    int32 i = 0;
++    int32 i = 0, real = 0;
+     while (i < FMV_SAMPLES)
+     {
+         if (a.rem <= 0)                         /* the next sound chunk */
+         {
+-            while (a.p + 8 <= a.end)
++            bool late = false;
++            while (a.off + 8 <= a.end)
+             {
+-                const uint8* h = a.p;
++                int32 avail = FMV_SHARED(gFmvAvail);
++                if (a.off + 8 > avail) { late = true; break; }      /* FMV-2: not here yet */
++                const uint8* h = fmvAt(a.off, true);
+                 uint32 id = h[0] | (h[1] << 8);
+                 uint32 size = h[2] | (h[3] << 8) | (h[4] << 16) | ((uint32)h[5] << 24);
+-                if (size > (uint32)(a.end - h - 8))
++                if (size > (uint32)(a.end - a.off - 8))
+                 {
+-                    a.p = a.end;                /* broken chunk: the end */
++                    a.off = a.end;              /* broken chunk: the end */
+                     break;
+                 }
+-                a.p = h + 8;
++                if (a.off + 8 + (int32)size > avail) { late = true; break; }
+                 if (id == RoQ_SOUND_MONO)
+                 {
+                     a.val = (int32)(int16)(h[6] | (h[7] << 8)) + 32768;
+                     a.rem = (int32)size;
++                    a.off += 8;
+                     break;
+                 }
+-                a.p += size;                    /* a picture chunk: not ours */
++                a.off += 8 + (int32)size;       /* a picture chunk: not ours */
+             }
+-            if (a.rem <= 0)                     /* no sound left: hold the last value */
++            FMV_SHARED(gFmvSlaveOff) = a.off;
++            (void)late;
++            if (a.rem <= 0)                     /* no sound (yet): hold the last value */
+             {
+                 uint16 last = (uint16)FMV_PWM(a.val);
+                 for (; i < FMV_SAMPLES; i++)
+                     dst[i] = last;
+-                return;
++                return real;
+             }
+         }
+ 
+         int32 n = a.rem;
+         if (n > FMV_SAMPLES - i)
+             n = FMV_SAMPLES - i;
+-        const uint8* b = a.p;
++        const uint8* b = fmvAt(a.off, true);    /* FMV-2: across the ring's end: slot 0 = slot 60 */
+         int32 v = a.val;
+         for (int32 j = 0; j < n; j++)
+         {
+@@ -100,10 +148,12 @@
+             dst[i + j] = (uint16)FMV_PWM(v);
+         }
+         a.val = v;
+-        a.p = b + n;
++        a.off += n;
+         a.rem -= n;
+         i += n;
++        real += n;
+     }
++    return real;
+ }
+ 
+ static void fmvAudioStart(uint16* buf)          /* slave DMA 1 -> PWM mono, on PWM requests */
+@@ -148,31 +198,51 @@
+     CacheClear();                               /* the movie is new in the cart */
+ 
+     FmvAudio a;
+-    a.p = (const uint8*)CD_LEVEL_CART + 8;      /* after the file header */
+-    a.end = (const uint8*)CD_LEVEL_CART + FMV_SHARED(gFmvLen);
++    a.off = 8;                                  /* after the file header */
++    a.end = FMV_SHARED(gFmvLen);
+     a.rem = 0;
+     a.val = 32768;
+ 
+-    uint16* buf[2];
+-    buf[0] = (uint16*)((uint32)gFmvSnd[0] | 0x20000000);   /* written cache-through */
+-    buf[1] = (uint16*)((uint32)gFmvSnd[1] | 0x20000000);
++    /* FMV-2: the ring.  play = the block the DMA plays, ready = blocks filled after it */
++    int32 nb = FMV_SHARED(gFmvSndBlocks);
++    uint16* buf[FMV_SND_BLOCKS];
++    int32 real[FMV_SND_BLOCKS];
++    for (int32 k = 0; k < nb; k++)
++        buf[k] = (uint16*)((uint32)gFmvSndBlock[k] | 0x20000000);   /* written cache-through */
+ 
+-    fmvAudioFill(a, buf[0]);
+-    fmvAudioFill(a, buf[1]);
++    real[0] = fmvAudioFill(a, buf[0]);
++    int32 play = 0, ready = 0;
+     fmvAudioStart(buf[0]);
+-    int32 next = 1;
+-
++    FMV_SHARED(gFmvPlayed) += real[0];          /* the pictures' clock: movie sound only, counted */
++                                                /* when it starts playing (stops while the CD is late) */
+     while (!FMV_SHARED(gFmvStop))
+     {
+-        if (!(SH2_DMA_CHCR1 & 2))               /* TE: block not finished yet */
++        if (SH2_DMA_CHCR1 & 2)                  /* TE: the block is over - the next one at once */
++        {
++            SH2_DMA_CHCR1;                      /* TE read, then cleared by the next start */
++            play = (play + 1) % nb;
++            if (ready > 0)
++                ready--;
++            else                                /* nothing filled (the CD was late): hold */
++            {
++                uint16 last = (uint16)FMV_PWM(a.val);
++                for (int32 k = 0; k < FMV_SAMPLES; k++)
++                    buf[play][k] = last;
++                real[play] = 0;
++                FMV_SHARED(gFmvHolds)++;
++            }
++            fmvAudioStart(buf[play]);
++            FMV_SHARED(gFmvPlayed) += real[play];
++            continue;
++        }
++        if (ready < nb - 1 && !FMV_CD_COPYING)  /* fill ahead while the cart is free */
+         {
+-            for (volatile int32 k = 0; k < 32; k++) {}   /* don't hammer the shared flag */
++            int32 b = (play + 1 + ready) % nb;
++            real[b] = fmvAudioFill(a, buf[b]);
++            ready++;
+             continue;
+         }
+-        SH2_DMA_CHCR1;                          /* TE read, then cleared by the next start */
+-        fmvAudioStart(buf[next]);
+-        next ^= 1;
+-        fmvAudioFill(a, buf[next]);
++        for (volatile int32 k = 0; k < 32; k++) {}   /* don't hammer the shared flags */
+     }
+ 
+     SH2_DMA_CHCR1 = 0;                          /* stop, then slowly down to 0 (no click) */
+@@ -183,33 +253,113 @@
+ }
+ 
+ /* ---------------------------------------------------------------------------- the master */
+-static const uint8* gFmvPos;                    /* the next chunk in the cart */
+-static const uint8* gFmvEnd;
++static int32 gFmvOff;                           /* FMV-2: the decoder's place in the file */
++static int32 gFmvNextOff;                       /*        ... after the chunk it holds */
++static int32 gFmvEnd;
++
++/* FMV-2: the stream - chunk gFmvNext is the next to send; gFmvBusy: CMD 46 running */
++static int32 gFmvChunks, gFmvNext, gFmvBusy, gFmvBusyChunk, gFmvBusyGuard;
++
++static void fmvSend(int32 c, int32 guard)
++{
++    CD_COMM8_32 = (uint32)gFmvEnd;              /* CMD 46 reads the file length from COMM8 */
++    MARS_SYS_COMM2 = (uint16)(0xC000 | (guard ? 0x2000 : 0) | (c & 0x1FFF));   /* no read-back, ring */
++    CD_COMM12_16 = 0;
++    MARS_SYS_COMM0 = CD_CMD_CHUNK_TO_CART;      /* not waited for: fmvPump looks again */
++    gFmvBusy = 1;
++    gFmvBusyChunk = c;
++    gFmvBusyGuard = guard;
++}
++
++static void fmvPump()                           /* FMV-2: keep the CD busy, never block */
++{
++    if (gFmvBusy)
++    {
++        if (MARS_SYS_COMM0 != 0)
++            return;                             /* still reading */
++        gFmvBusy = 0;
++        if (gFmvBusyGuard)                      /* slot 60 done: now the chunk in its slot */
++        {
++            fmvSend(gFmvBusyChunk, 0);
++            return;
++        }
++        int32 end = (gFmvBusyChunk + 1) << 15;
++        if (end > gFmvEnd) end = gFmvEnd;
++        CacheClear();                           /* the slot held the movie's earlier part */
++        FMV_SHARED(gFmvAvail) = end;
++        gFmvNext = gFmvBusyChunk + 1;
++        return;
++    }
++    if (gFmvNext >= gFmvChunks)
++        return;
++    int32 readers = gFmvOff;                    /* the earliest byte still needed */
++    int32 so = FMV_SHARED(gFmvSlaveOff);
++    if (so < readers) readers = so;
++    if (((gFmvNext + 2) << 15) - readers > FMV_RING)
++        return;                                 /* the ring is full */
++    fmvSend(gFmvNext, (gFmvNext > 0) && (gFmvNext % FMV_RING_SLOTS == 0));
++}
++
++static int32 gFmvStalls = 0;                    /* FMV-2: times the decoder waited for the CD */
++static int32 gFmvStallFrames = 0;               /* FMV-2: vertical blanks spent waiting       */
++#define FMV_STALL_MAX   600                     /* FMV-2: 10 s without the data: the movie ends */
++static bool fmvWaitData(int32 need)             /* FMV-2: until the bytes before need are in */
++{
++    if (FMV_SHARED(gFmvAvail) >= need)
++        return true;
++    gFmvStalls++;
++    int32 t0 = *(volatile int32*)&gFrameIndex;
++    bool ok = true;
++    while (FMV_SHARED(gFmvAvail) < need)
++    {
++        cdPause();
++        fmvPump();
++        if ((!gFmvBusy && gFmvNext >= gFmvChunks) ||           /* all sent: nothing more will come */
++            *(volatile int32*)&gFrameIndex - t0 > FMV_STALL_MAX)  /* the CD gives no more */
++        {
++            ok = false;
++            break;
++        }
++    }
++    gFmvStallFrames += *(volatile int32*)&gFrameIndex - t0;   /* the sound waited as long */
++    CacheClear();
++    return ok;
++}
+ 
+ static void fmvGetChunk(roq_file* fp)           /* the decoder's next picture chunk */
+ {
+     if (fp->bof)                                /* the 8-byte file header */
+     {
+-        fp->data = (unsigned char*)gFmvPos;
++        if (!fmvWaitData(8)) { fp->eof = 1; fp->data = NULL; return; }
++        fp->data = (unsigned char*)fmvAt(0, false);
+         fp->page_base = fp->data;
+         fp->page_end = fp->data + 8;
++        gFmvNextOff = 8;
+         return;
+     }
+-    while (gFmvPos + 8 <= gFmvEnd)
++    while (gFmvOff + 8 <= gFmvEnd)
+     {
+-        const uint8* h = gFmvPos;
++        if (!fmvWaitData(gFmvOff + 8))
++            break;
++        const uint8* h = fmvAt(gFmvOff, false);
+         uint32 id = h[0] | (h[1] << 8);
+         uint32 size = h[2] | (h[3] << 8) | (h[4] << 16) | ((uint32)h[5] << 24);
+-        if (size > (uint32)(gFmvEnd - h - 8))
++        if (size > (uint32)(gFmvEnd - gFmvOff - 8))
+             break;
++        if (FMV_SHARED(gFmvRing) && size > 32768 - 8)
++            break;                              /* FMV-2: longer than slot 60 (never seen): the end */
+         if (id == RoQ_SOUND_MONO || id == RoQ_SOUND_STEREO)
+         {
+-            gFmvPos = h + 8 + size;             /* the slave plays these */
++            gFmvOff += 8 + (int32)size;         /* the slave plays these */
+             continue;
+         }
++        if (!fmvWaitData(gFmvOff + 8 + (int32)size))
++            break;
++        h = fmvAt(gFmvOff, false);
+         fp->data = (unsigned char*)h;
+         fp->page_base = fp->data;
+         fp->page_end = fp->data + 8 + size;
++        gFmvNextOff = gFmvOff + 8 + (int32)size;
+         return;
+     }
+     fp->eof = 1;                                /* the end of the movie */
+@@ -220,7 +370,7 @@
+ {
+     if (!fp->data)
+         return;
+-    gFmvPos = fp->page_end;
++    gFmvOff = gFmvNextOff;
+     fp->bof = 0;
+ }
+ 
+@@ -255,8 +405,10 @@
+     }
+ }
+ 
+-static int32 fmvPad()
++static int32 fmvPad(int32 last)
+ {
++    if (gFmvBusy)                               /* FMV-2: one command at a time */
++        return last;
+     MARS_SYS_COMM2 = 0;                         /* no sound effect */
+     cdCmd(CD_CMD_GET_PAD);
+     return MARS_SYS_COMM8;
+@@ -302,7 +454,7 @@
+     MARS_SYS_COMM2 = (uint16)(FMV_FILE_BASE + n);   /* the length, before anything moves */
+     cdCmd(CD_CMD_OPEN_FILE);
+     int32 len = (MARS_SYS_COMM0 == 0) ? (int32)CD_COMM8_32 : 0;
+-    if (len <= 8 || len > FMV_MAX_LEN)
++    if (len <= 8 || len >= (0x2000 << 15))      /* FMV-2: any size up to 256 MB */
+     {
+         renderScratchDone();
+         fmvFail(FMV_YELLOW);
+@@ -316,7 +468,47 @@
+     splashBegin();
+     MARS_SYS_COMM4 = MARS_CMD_FMV_PWM;          /* the slave turns the PWM on meanwhile */
+     gCartLevel = -1;                            /* the level slot is the movie's now */
+-    int32 res = cdLoadToCart((uint16)(FMV_FILE_BASE + n));
++
++    /* FMV-2: the ring.  The first chunk tells whether the Sub-CPU knows ring mode: the RoQ
++       signature (0x1084) must be at the start of the slot afterwards */
++    gFmvEnd = len;
++    gFmvChunks = (len + 32767) >> 15;
++    gFmvNext = 0;
++    gFmvBusy = 0;
++    gFmvOff = 0;
++    FMV_SHARED(gFmvSlaveOff) = 0;
++    FMV_SHARED(gFmvAvail) = 0;
++    FMV_SHARED(gFmvRing) = 1;
++    fmvSend(0, 0);
++    while (gFmvBusy) fmvPump();
++    const volatile uint8* sig = (const volatile uint8*)((uint32)CD_LEVEL_CART | 0x20000000);
++    int32 res = len;
++    bool ringOk = (CD_COMM12_16 & 0x100) != 0;  /* FMV-2: a ring-mode Sub-CPU replies 0x100 */
++    if (!ringOk || sig[0] != 0x84 || sig[1] != 0x10)   /* no ring mode: the old way, if it fits
++                                                   (an old Sub-CPU writes nothing: the slot may
++                                                   still hold the last movie's start) */
++    {
++        FMV_SHARED(gFmvRing) = 0;
++        if (len > FMV_MAX_LEN)
++        {
++            splashEnd();
++            renderScratchDone();
++            fmvFail(FMV_YELLOW);
++            return false;
++        }
++        res = cdLoadToCart((uint16)(FMV_FILE_BASE + n));
++        FMV_SHARED(gFmvAvail) = res;
++        gFmvNext = gFmvChunks;
++    }
++    else
++    {
++        int32 target = (gFmvChunks < FMV_PRELOAD) ? gFmvChunks : FMV_PRELOAD;
++        while (gFmvNext < target)               /* the lead, with the red bar */
++        {
++            fmvPump();
++            splashProgress(gFmvNext, target);
++        }
++    }
+     CacheClear();
+     MARS_WAIT();                                /* PWM ramp done */
+     MARS_SYS_COMM4 = MARS_CMD_CACHE;            /* slave: forget the old cart data too */
+@@ -339,8 +531,8 @@
+     roq_file fp;
+     memset(&fp, 0, sizeof(fp));
+     fp.bof = 1;
+-    gFmvPos = (const uint8*)CD_LEVEL_CART;
+-    gFmvEnd = gFmvPos + res;
++    gFmvOff = 0;
++    gFmvEnd = res;
+ 
+     int32 displayRate = (MARS_VDP_DISPMODE & MARS_NTSC_FORMAT) ? 60 : 50;
+     roq_init(ri, &fp, fmvGetChunk, fmvRetChunk, displayRate, (short*)((uint8*)&MARS_FRAMEBUFFER + 0x200));
+@@ -373,10 +565,13 @@
+ 
+     int32 start = gFrameIndex;
+     int32 frames = 0;
++    gFmvStallFrames = 0;
+     int32 prev = 0xFFFF;                        /* buttons held when the movie starts don't count */
++    int32 pad = 0xFFFF;
+     while (1)
+     {
+-        int32 pad = fmvPad();
++        fmvPump();                              /* FMV-2: the next chunk on its way */
++        pad = fmvPad(pad);
+         int32 hit = pad & ~prev;
+         prev = pad;
+         if (frames > 5 && (hit & (SEGA_CTRL_A | SEGA_CTRL_B | SEGA_CTRL_C | SEGA_CTRL_START)))
+@@ -389,19 +584,52 @@
+ 
+         if (!audio)                             /* the sound starts with the first picture */
+         {
++            FMV_SHARED(gFmvPlayed) = 0;
++            {   /* FMV-2: the sound ring - gFmvSnd, then the borrowed lists after the picture copy */
++                int32 nb = 0;
++                gFmvSndBlock[nb++] = gFmvSnd[0];
++                gFmvSndBlock[nb++] = gFmvSnd[1];
++                uint32 p = ((uint32)scratch + copyOfs + ri->canvas_pitch * ri->display_height * 2 + 15) & ~15u;
++                uint32 e = (uint32)scratch + scratchSize;
++                while (nb < FMV_SND_BLOCKS && p + FMV_SAMPLES * 2 <= e) {
++                    gFmvSndBlock[nb++] = (uint16*)p;
++                    p += (FMV_SAMPLES * 2 + 15) & ~15u;
++                }
++                csFlushPiece();                 /* the save buffer (4 KB) lends its room too: */
++                csPiece = -1;                   /* main.cpp reads the piece again next time   */
++                p = ((uint32)csBuf + 15) & ~15u;
++                e = (uint32)csBuf + sizeof(csBuf);
++                while (nb < FMV_SND_BLOCKS && p + FMV_SAMPLES * 2 <= e) {
++                    gFmvSndBlock[nb++] = (uint16*)p;
++                    p += (FMV_SAMPLES * 2 + 15) & ~15u;
++                }
++                gFmvSndBlocks = nb;
++                CacheClear();                   /* the slave reads them from SDRAM */
++            }
+             MARS_SYS_COMM4 = MARS_CMD_FMV_AUDIO;
+             audio = true;
+             start = *(volatile int32*)&gFrameIndex;
++            gFmvStallFrames = 0;
+         }
+ 
+         frames++;
+-        int32 due = start + (frames * displayRate) / (int32)ri->framerate;
+-        while (*(volatile int32*)&gFrameIndex - due < 0) {}
++        /* FMV-2: picture n is due when the sound has played n / framerate seconds (the PWM runs
++           at exactly 22050 Hz), or by the vertical blank count if that comes first.  The count
++           alone was not enough: while the cart is being written, vertical blank interrupts get
++           lost (about 9% of them in emulation), and the pictures fell behind the sound. */
++        int32 due = start + gFmvStallFrames + (frames * displayRate) / (int32)ri->framerate;
++        int32 dueSamples = (frames * RoQ_SAMPLE_RATE) / (int32)ri->framerate;
++        while (*(volatile int32*)&gFrameIndex - due < 0 && FMV_SHARED(gFmvPlayed) < dueSamples)
++        {
++            fmvPump();                          /* FMV-2: a pause between looks (the bus) */
++            cdPause();
++        }
+     }
+ 
+     /* the end: sound off, the game's screen back */
+     FMV_SHARED(gFmvStop) = 1;
+     MARS_WAIT();
++    while (gFmvBusy) fmvPump();                 /* FMV-2: let the last chunk finish */
+     pageWait();
+     SH2_DMA_CHCR1 = 0;
+ 
+@@ -418,6 +646,25 @@
+     return true;
+ }
+ 
++/* FMV-2: the movies at their places in the story (as the PC game's game flow): CAFE + SNOW
++   before Caves (a new game), MANSION before Lara's Home, LIFT before St. Francis' Folly,
++   VISION before the City of Khamoon, CANYON before Natla's Mines, PYRAMID before Atlantis,
++   PRISON after Atlantis (before its cut-scene), END after the Great Pyramid.  Only when the
++   game goes on to that level, not when a level is picked in the passport - except Caves from
++   the title, which is the new game.  The game then goes back to the title (game.h). */
++bool osPlayVideo(int32 n);
++void osStoryMovies(int32 prev, int32 next)
++{
++    if (prev == LVL_TR1_TITLE && next == LVL_TR1_1)                    { osPlayVideo(2); osPlayVideo(3); }
++    else if (prev == LVL_TR1_TITLE && next == LVL_TR1_GYM)             { osPlayVideo(1); }
++    else if (next == LVL_TR1_4 && (prev == LVL_TR1_3B || prev == LVL_TR1_CUT_1))   { osPlayVideo(4); }
++    else if (next == LVL_TR1_8A && (prev == LVL_TR1_7B || prev == LVL_TR1_CUT_2))  { osPlayVideo(5); }
++    else if (next == LVL_TR1_10A && prev == LVL_TR1_8C)                { osPlayVideo(6); }
++    else if (next == LVL_TR1_10B && (prev == LVL_TR1_10A || prev == LVL_TR1_CUT_3)) { osPlayVideo(7); }
++    else if (next == LVL_TR1_CUT_4 && prev == LVL_TR1_10B)             { osPlayVideo(8); }
++    else if (prev == LVL_TR1_10C && next == LVL_TR1_EGYPT)             { osPlayVideo(10); }   /* the end (not exit to title) */
++}
++
+ bool osPlayVideo(int32 n)                       /* SFX-2: the effects stop while a movie plays */
+ {
+     sfxBankStop();
+diff -ruN a/src/platform/32x/main.cpp b/src/platform/32x/main.cpp
+--- a/src/platform/32x/main.cpp	2026-10-22 03:38:05.648059917 -0700
++++ b/src/platform/32x/main.cpp	2026-10-22 03:38:05.688169554 -0700
+@@ -409,6 +409,19 @@
+ static bool  csDirty = false;
+ static bool  csOk = true;
+ 
++/* SLOTS-1: the save slots live outside the 64 KB save area, in cart 0x060000-0x07FFFF (between
++   the game, at most 384 KB, and Caves at 0x080000): 16 slots of 8 KB = 32 pieces.  CMD 61 with
++   COMM2 bit 8 set writes piece (COMM2 & 31) there; the Sub-CPU answers COMM12 = 0x101. */
++#define CS_SLOTS        0x060000
++#define CS_SLOT_SIZE    0x2000
++#define CS_SLOT_COUNT   16
++#define CS_SLOT_PIECE   0x100           /* COMM2 flag: a piece of the slot area */
++
++static uint32 csPieceBase(int32 piece)
++{
++    return (piece & CS_SLOT_PIECE) ? CS_SLOTS + uint32(piece & 31) * CS_PIECE : CS_SET + uint32(piece) * CS_PIECE;
++}
++
+ static void csFlushPiece()
+ {
+     if (csPiece < 0 || !csDirty) return;
+@@ -421,7 +434,8 @@
+     MARS_SYS_COMM2 = (uint16)csPiece;
+     CD_COMM12_16 = 0;
+     cdCmd(CS_CMD_TO_CART);
+-    if (CD_COMM12_16 != 1) csOk = false;
++    if ((CD_COMM12_16 & 0xFF) != 1) csOk = false;
++    if ((csPiece & CS_SLOT_PIECE) && CD_COMM12_16 != 0x101) csOk = false;   /* SLOTS-1 */
+     csDirty = false;
+ }
+ 
+@@ -439,8 +453,10 @@
+ {
+     while (len > 0)
+     {
+-        int32 piece = int32(ofs - CS_SET) >> 12;
+-        uint32 base = CS_SET + uint32(piece) * CS_PIECE;
++        int32 piece = (ofs >= CS_SLOTS && ofs < CS_SLOTS + CS_SLOT_COUNT * CS_SLOT_SIZE)
++                    ? (CS_SLOT_PIECE | int32((ofs - CS_SLOTS) >> 12))    /* SLOTS-1 */
++                    : int32(ofs - CS_SET) >> 12;
++        uint32 base = csPieceBase(piece);
+         if (piece != csPiece)
+         {
+             csFlushPiece();
+@@ -501,37 +517,91 @@
+     return true;
+ }
+ 
++/* ---------------------------------------------------------------------------------------
++ * SLOTS-1: 16 save slots, picked in the passport (Save Game: the slot to write; Load Game:
++ *   every slot in use, with its level).  Slot n at cart 0x060000 + n * 8 KB, same format as
++ *   the single save before ('OLGM', size, SaveGame, data).  gSaveSlot -1 = that old single
++ *   save at 0x3F0400: still loadable, and the only save when the Sub-CPU has no slots.
++ *   A Sub-CPU without SLOTS-1 would write a slot piece into save piece (n & 15): so before the
++ *   first slot write, the last piece of the slot area is written back unchanged once as a probe.
++ *   With SLOTS-1 the answer is 0x101; an older Sub-CPU answers 1 and writes save piece 15,
++ *   the cart test's scratch piece (never holds data).
++ * --------------------------------------------------------------------------------------- */
++int32 gSaveSlot = -1;                       /* the slot of the last load or save */
++int32 osSaveSlots();
++static int32 gSlotsOk = -1;                 /* -1 not asked yet, 0 no, 1 yes */
++
++static uint32 slotBase(int32 slot)
++{
++    return (slot < 0) ? CS_GAME : CS_SLOTS + uint32(slot) * CS_SLOT_SIZE;
++}
++
++static uint32 slotMax(int32 slot)
++{
++    return (slot < 0) ? CS_GAME_MAX : CS_SLOT_SIZE - 8;
++}
++
++int32 osSaveSlots()                         /* the number of slots (0: the old single save) */
++{
++#ifdef CD32X_NO_SLOTS
++    return 0;
++#else
++    if (gSlotsOk < 0)
++    {
++        csFlushPiece();
++        int32 probe = CS_SLOT_PIECE | 31;
++        cartRead(csPieceBase(probe), csBuf, CS_PIECE);        /* the piece as it is */
++        csPiece = probe;
++        csDirty = true;
++        csFlushPiece();
++        gSlotsOk = (CD_COMM12_16 == 0x101) ? 1 : 0;
++        csOk = true;
++        csPiece = -1;
++    }
++    return gSlotsOk ? CS_SLOT_COUNT : 0;
++#endif
++}
++
++int32 osSaveSlotLevel(int32 slot)           /* the level saved in a slot, -1 = empty */
++{
++    uint32 b = slotBase(slot);
++    if (cartRead32(b) != 0x4F4C474D) return -1;                /* 'OLGM' */
++    uint32 size = cartRead32(b + 4);
++    if (size < sizeof(gSaveGame) || size > slotMax(slot)) return -1;
++    SaveGame tmp;
++    cartRead(b + 8, (uint8*)&tmp, sizeof(tmp));
++    if (tmp.version != SAVEGAME_VER) return -1;
++    return tmp.level;
++}
++
+ bool osCheckSave()
+ {
+-    if (cartRead32(CS_GAME) != 0x4F4C474D) return false;        /* 'OLGM' */
+-    uint32 size = cartRead32(CS_GAME + 4);
+-    if (size < sizeof(gSaveGame) || size > CS_GAME_MAX) return false;
+-    uint32 version;
+-    cartRead(CS_GAME + 8, (uint8*)&version, sizeof(version));
+-    return version == SAVEGAME_VER;
++    return osSaveSlotLevel(gSaveSlot) >= 0;
+ }
+ 
+ bool osSaveGame()
+ {
++    uint32 b = slotBase(gSaveSlot);
+     uint32 hdr = CS_EVEN(sizeof(gSaveGame));
+     uint32 size = hdr + gSaveGame.dataSize;
+-    if (size > CS_GAME_MAX) return false;
+-    cartWrite32(CS_GAME, 0);                                    /* invalid while writing */
+-    if (!cartWrite32(CS_GAME + 4, size)) return false;
+-    if (!cartWrite(CS_GAME + 8, (const uint8*)&gSaveGame, sizeof(gSaveGame))) return false;
+-    if (!cartWrite(CS_GAME + 8 + hdr, gSaveData, gSaveGame.dataSize)) return false;
+-    cartWrite32(CS_GAME, 0x4F4C474D);                           /* 'OLGM' last */
++    if (size > slotMax(gSaveSlot)) return false;
++    cartWrite32(b, 0);                                          /* invalid while writing */
++    if (!cartWrite32(b + 4, size)) return false;
++    if (!cartWrite(b + 8, (const uint8*)&gSaveGame, sizeof(gSaveGame))) return false;
++    if (!cartWrite(b + 8 + hdr, gSaveData, gSaveGame.dataSize)) return false;
++    cartWrite32(b, 0x4F4C474D);                                 /* 'OLGM' last */
+     return csEnd();                                             /* OL-9 */
+ }
+ 
+ bool osLoadGame()
+ {
+     if (!osCheckSave()) return false;
++    uint32 b = slotBase(gSaveSlot);
+     SaveGame tmp;
+-    cartRead(CS_GAME + 8, (uint8*)&tmp, sizeof(tmp));
++    cartRead(b + 8, (uint8*)&tmp, sizeof(tmp));
+     if (int32(tmp.dataSize) > int32(sizeof(gSaveData))) return false;
+     gSaveGame = tmp;
+-    cartRead(CS_GAME + 8 + CS_EVEN(sizeof(gSaveGame)), gSaveData, gSaveGame.dataSize);
++    cartRead(b + 8 + CS_EVEN(sizeof(gSaveGame)), gSaveData, gSaveGame.dataSize);
+     return true;
+ }
+ #else
+@@ -1115,6 +1185,9 @@
+     gLevelID = LVL_TR1_1;                          /* BENCH-1: straight into Caves */
+ #endif
+ #endif
++#ifdef CD32X
++    osSaveSlots();                                 /* SLOTS-1: ask the Sub-CPU once, at start */
++#endif
+     gameInit();
+ #ifdef CD32X_BENCH
+     gSettings.video_fps = 0;                       /* BENCH-1: no fps counter in the pictures */
+diff -ruN a/src/platform/32x/sound.cpp b/src/platform/32x/sound.cpp
+--- a/src/platform/32x/sound.cpp	2026-10-22 03:38:05.658634921 -0700
++++ b/src/platform/32x/sound.cpp	2026-10-22 03:38:05.660952955 -0700
+@@ -102,6 +102,22 @@
+     return id;
+ }
+ 
++/* CUES-1: which game tracks have real audio on the disc - build.sh reads music_map.txt and
++   passes the bits (tracks 0-31 in LO, 32-63 in HI).  A trigger cue (6-56) plays only when its
++   track is there; otherwise it is ignored, so the level music is not cut by 2 s of silence. */
++#ifndef CD32X_TRACKS_LO
++#define CD32X_TRACKS_LO 0u
++#endif
++#ifndef CD32X_TRACKS_HI
++#define CD32X_TRACKS_HI 0u
++#endif
++static bool sndOnDisc(int32 track)
++{
++    if (track < 32) return ((uint32)(CD32X_TRACKS_LO) >> track) & 1;
++    if (track < 64) return ((uint32)(CD32X_TRACKS_HI) >> (track - 32)) & 1;
++    return true;
++}
++
+ /* OL-10: what the SH2 started (the engine asks "still playing?" every frame) */
+ static int32 sndTrack = 0;          /* 0 = none */
+ static int32 sndCutLevel = -1;      /* CUTAUDIO-1: the cut-scene whose sound has started */
+@@ -146,8 +162,8 @@
+             return;
+         track = 60 + int32(gLevelID);
+     }
+-    else if (track >= 6 && track <= 56 && track != 13)
+-        return;
++    else if (track >= 6 && track <= 56 && track != 13 && !sndOnDisc(track))
++        return;                     /* CUES-1: the cues and voices that are on the disc play */
+     if (track < SND_TRACK_FIRST || track > SND_TRACK_LAST)
+         return;
+     MARS_SYS_COMM2 = (uint16)(track | (sndLoops(track) ? 0 : 0x8000));
