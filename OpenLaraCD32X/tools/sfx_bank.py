@@ -16,8 +16,8 @@ number of samples.  Nothing else in the file changes, so a level without a bank 
 The level is loaded into the cart with its bank, so each level has its own room limit:
     Caves (LEVEL1, the title)  cart 0x080000 .. 0x1FF000 (the cart test's piece 15 after it)
     every other level          cart 0x200000 .. 0x3F0000 (the save area after it)
-The rate is the highest of 8000 / 7000 / 6000 / 5000 Hz that fits; samples longer than 3 s are
-cut (with a short fade).  A file that already has a bank is left alone (build.sh copies fresh
+The rate is the highest of 8000 / 7000 / 6000 / 5000 Hz that fits; samples longer than 8 s would
+be cut (with a short fade) - the longest in TR1 is 7.7 s, so none is.  A file that already has a bank is left alone (build.sh copies fresh
 .PKD files every build)."""
 import io, os, struct, sys, wave
 
@@ -25,7 +25,7 @@ LIMIT = {"LEVEL1.PKD": 0x17F000}            # Caves: 0x080000 + this = 0x1FF000
 LIMIT_DEFAULT = 0x1F0000                    # 0x200000 + this = 0x3F0000 (the save area)
 MARGIN = 4096
 RATES = (8000, 7000, 6000, 5000)
-MAX_SECS = 3.0
+MAX_SECS = 8.0                              # the mixer's 16.16 position: < 65536 samples
 HDR_SIZE = 172                              # out_32X.h Header
 OFS_COUNT = 30                              # u16 soundOffsetsCount
 OFS_DATA = 164                              # u32 soundData

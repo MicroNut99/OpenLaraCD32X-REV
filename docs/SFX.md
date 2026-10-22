@@ -12,7 +12,8 @@ effect of each frame was sent to the Sega CD.
   - The bank is loaded into the cart together with the level, by the normal level load.
   - **No new command, no boot stack change**, and RESUME-1's cart check covers it.
   - The bank holds **all** samples of the level, 8-bit, 8000 Hz. Where the cart room after the level is
-    smaller, the rate drops: Caves 6000, Tomb of Tihocan 7000, The Great Pyramid 6000. Samples are cut at 3 s.
+    smaller, the rate drops: Caves 6000, Tomb of Tihocan 7000, The Great Pyramid 6000. Nothing is cut
+    (the longest sample, 7.7 s, plays whole).
   - The banks are 200–500 KB.
 - **The mixer:** `sfx.inc` runs on the slave SH2, in the DMA 1 interrupt.
   - DMA 1 feeds the PWM from two blocks of up to 316 words (the movie player's buffers).
