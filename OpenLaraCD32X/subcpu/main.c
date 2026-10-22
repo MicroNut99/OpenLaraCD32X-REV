@@ -40,6 +40,101 @@ extern int  scd_track_info(int track);
 extern void scd_cdda_play(int track);                       
 extern int  scd_bios_call(int fn, int d1, void *a0);       
 
+/* STREAM-1 (OL_STREAM, Makefile STREAM=1, the default; STREAM=0 builds this file as before).
+   From OpenJazz R7 / Hurrican P2b.  The chunks of a file (CMD 46 / 47) come from a drive that
+   keeps reading: cd_stream_read starts it once (ROMREADN to the end of the file) and takes the
+   sectors as they come, checking each one's header; a missed or wrong sector starts it again at
+   the sector wanted.  Before, every 32 KB chunk was a CDCSTOP + ROMREADN (a seek each time).
+   Anything else that uses the drive (other reads, opening a file, the CD audio, any BIOS call)
+   stops the stream first (the macros below), so it starts afresh. */
+#ifndef OL_STREAM
+#define OL_STREAM 0
+#endif
+#if OL_STREAM
+extern void scd_stream_start(int lba, int count);
+extern int  scd_stream_sector(void *buf, void *hdr, int spins);
+/*   scd_stream_start(lba, count)        CDCSTOP, then ROMREADN for count sectors from lba
+     scd_stream_sector(buf, hdr, spins)  the next sector into buf (2048 bytes), its header (minute,
+                                         second, frame in BCD, mode) into hdr; 0 done, -1 the
+                                         transfer failed, -2 no sector after spins looks */
+__asm__(
+    "       .pushsection .text\n"
+    "       .align  2\n"
+    "       .globl  scd_stream_start\n"
+    "scd_stream_start:\n"
+    "       movem.l %d2-%d7/%a2-%a6,-(%sp)\n"
+    "       move.w  #0x0089,%d0\n"            /* CDCSTOP */
+    "       jsr     0x5F22.w\n"
+    "       lea     48(%sp),%a0\n"            /* -> lba, count (the arguments) */
+    "       move.w  #0x0020,%d0\n"            /* ROMREADN */
+    "       jsr     0x5F22.w\n"
+    "       movem.l (%sp)+,%d2-%d7/%a2-%a6\n"
+    "       rts\n"
+    "       .globl  scd_stream_sector\n"
+    "scd_stream_sector:\n"
+    "       movem.l %d2-%d7/%a2-%a6,-(%sp)\n"
+    "       move.l  56(%sp),%d7\n"            /* spins */
+    "1:     move.w  #0x008A,%d0\n"            /* CDCSTAT */
+    "       jsr     0x5F22.w\n"
+    "       bcc.b   2f\n"
+    "       subq.l  #1,%d7\n"
+    "       bne.b   1b\n"
+    "       moveq   #-2,%d0\n"
+    "       bra.b   9f\n"
+    "2:     andi.w  #0xF8FF,0x8004.w\n"       /* CDC destination: Sub-CPU */
+    "       ori.w   #0x0300,0x8004.w\n"
+    "3:     move.w  #0x008B,%d0\n"            /* CDCREAD */
+    "       jsr     0x5F22.w\n"
+    "       bcs.b   3b\n"
+    "       movea.l 48(%sp),%a0\n"            /* buf */
+    "       movea.l 52(%sp),%a1\n"            /* header */
+    "       move.w  #0x008C,%d0\n"            /* CDCTRN */
+    "       jsr     0x5F22.w\n"
+    "       bcc.b   4f\n"
+    "       moveq   #-1,%d0\n"
+    "       bra.b   9f\n"
+    "4:     move.w  #0x008D,%d0\n"            /* CDCACK */
+    "       jsr     0x5F22.w\n"
+    "       moveq   #0,%d0\n"
+    "9:     movem.l (%sp)+,%d2-%d7/%a2-%a6\n"
+    "       rts\n"
+    "       .popsection\n"
+);
+static int st_next = -1, st_end;               /* the drive delivers st_next .. st_end - 1 */
+static uint32_t st_restarts, st_low, st_high, st_err;   /* diagnostics */
+#define scd_sub_read(p, l, n)  (st_next = -1, scd_sub_read(p, l, n))
+#define scd_open_file(n)       (st_next = -1, scd_open_file(n))
+#define scd_bios_call(f, d, a) (st_next = -1, scd_bios_call(f, d, a))
+static int unbcd(int v) { return (v >> 4) * 10 + (v & 15); }
+static void cd_stream_read(uint8_t *dst, int lba, int n, int file_end)
+{
+    int fails = 0;
+    while (n > 0) {
+        if (lba != st_next || lba >= st_end) {
+            int count = file_end - lba;
+            if (count < n) count = n;
+            scd_stream_start(lba, count);
+            st_next = lba; st_end = lba + count;
+            st_restarts++;
+        }
+        uint8_t hdr[4];
+        const int r = scd_stream_sector(dst, hdr, 400000);
+        const int got = unbcd(hdr[0]) * 4500 + unbcd(hdr[1]) * 75 + unbcd(hdr[2]) - 150;
+        if (r == 0 && got < lba && got >= lba - 64) {    /* an earlier sector (the drive's run-up): skip it */
+            st_low++;
+            continue;
+        }
+        if (r != 0 || got != lba) {                      /* failed, or sectors were missed */
+            if (r != 0) st_err++; else st_high++;
+            st_next = -1;                                /* start again at this sector */
+            if (++fails > 64) { scd_sub_read(dst, lba, n); return; }   /* the old way */
+            continue;
+        }
+        st_next++; lba++; n--; dst += 2048;
+    }
+}
+#endif
+
 /* 68K VBlank Tick Macro. Sub-CPU accesses Main CPU Comm Registers via 0xFF8000 */
 #define GET_TICKS read_long(0xFF801C)
 
@@ -65,6 +160,64 @@ extern int do_md_cmd0(int cmd);
 extern int do_md_cmd1(int cmd, int arg1);
 extern int do_md_cmd2(int cmd, int arg1, int arg2);
 extern int do_md_cmd3(int cmd, int arg1, int arg2, int arg3);
+
+#if OL_STREAM
+/* STREAM-1: read-ahead.  While the 68000 copies a chunk to the cart, and while the Sub-CPU waits
+   for the next command, the drive goes on delivering sectors; they would be lost (its buffer
+   holds only a few), so cd_pump takes each one as it arrives into st_buf - the start of the
+   next chunk.  cd_chunk_read uses what st_buf holds and reads the rest. */
+#define ST_RING 32                                   /* sectors (64 KB): two chunks */
+static uint8_t st_buf[ST_RING * 2048] __attribute__((aligned(4)));
+static int st_buf_lba = -1, st_buf_n, st_buf_pos;      /* sector st_buf_lba is in slot st_buf_pos */
+extern int wait_md_cmd(void);
+static void cd_pump(void)
+{
+    if (st_next < 0 || st_buf_lba < 0 || st_buf_n >= ST_RING || st_next >= st_end ||
+        st_next != st_buf_lba + st_buf_n)
+        return;
+    uint8_t hdr[4];
+    const int r = scd_stream_sector(st_buf + ((st_buf_pos + st_buf_n) % ST_RING) * 2048, hdr, 1);
+    if (r == -2) return;                                 /* no sector yet */
+    const int got = unbcd(hdr[0]) * 4500 + unbcd(hdr[1]) * 75 + unbcd(hdr[2]) - 150;
+    if (r == 0 && got < st_next && got >= st_next - 64) { st_low++; return; }   /* run-up */
+    if (r != 0 || got != st_next) { st_next = -1; return; }                    /* lost: start again when asked */
+    st_buf_n++; st_next++;
+}
+/* every 68000 command from here on keeps the drive's sectors coming (0xFF800E: the 68000 is busy).
+   NOT for MD_CMD_DMA_SCREEN (17): send_md_cmd leaves the sub flag set for it and the 68000 waits
+   for wait_md_cmd to clear it, so this pumping wait would never end.  main.c does not use it. */
+static int md_wait_pumping(void)
+{
+    while (read_byte(0xFF800E)) cd_pump();
+    return wait_md_cmd();
+}
+static int md_cmd0_p(int c) { send_md_cmd0(c); return md_wait_pumping(); }
+static int md_cmd1_p(int c, int a) { send_md_cmd1(c, a); return md_wait_pumping(); }
+static int md_cmd2_p(int c, int a, int b) { send_md_cmd2(c, a, b); return md_wait_pumping(); }
+static int md_cmd3_p(int c, int a, int b, int d) { send_md_cmd3(c, a, b, d); return md_wait_pumping(); }
+static int md_cmd4_p(int c, int a, int b, int d, int e) { send_md_cmd4(c, a, b, d, e); return md_wait_pumping(); }
+#define do_md_cmd0 md_cmd0_p
+#define do_md_cmd1 md_cmd1_p
+#define do_md_cmd2 md_cmd2_p
+#define do_md_cmd3 md_cmd3_p
+#define do_md_cmd4 md_cmd4_p
+static void cd_chunk_read(uint8_t *dst, int lba, int n, int file_end)
+{
+    int k = 0;
+    if (st_buf_lba >= 0 && lba >= st_buf_lba && lba < st_buf_lba + st_buf_n) {
+        const int skip = lba - st_buf_lba;               /* sectors read ahead that are not wanted */
+        st_buf_pos = (st_buf_pos + skip) % ST_RING; st_buf_lba = lba; st_buf_n -= skip;
+        k = st_buf_n < n ? st_buf_n : n;
+        for (int i = 0; i < k; i++)
+            memcpy(dst + i * 2048, st_buf + ((st_buf_pos + i) % ST_RING) * 2048, 2048);
+        st_buf_pos = (st_buf_pos + k) % ST_RING; st_buf_lba += k; st_buf_n -= k;
+    }
+    if (k < n) {
+        cd_stream_read(dst + k * 2048, lba + k, n - k, file_end);
+        st_buf_lba = lba + n; st_buf_n = 0; st_buf_pos = 0;   /* the read-ahead goes on from here */
+    }
+}
+#endif
 
 #define MD_CMD_CLEAR_B        4
 #define MD_CMD_CLEAR_A        8
@@ -603,7 +756,11 @@ int main(void)
         if (cmd == 0) {                  /* HW6: idle - pause ~0.2 ms before the 68K reads COMM0
                                             again (fewer reads while the SH2 may be writing it) */
             volatile int k;
+#if OL_STREAM
+            for (k = 0; k < 150; k++) { if ((k & 3) == 0) cd_pump(); }   /* STREAM-1: read ahead */
+#else
             for (k = 0; k < 150; k++) { }
+#endif
         }
 
         /* KOBO K5 - PAD FAST PATH.  WHY: the SH2 asks for the pad (CMD 48) every frame and
@@ -746,7 +903,12 @@ int main(void)
             }
 #else
             if (n > 0) {
+#if OL_STREAM
+                cd_chunk_read((uint8_t *)0x0C0000, saved_lba + chunk * 16, n,   /* STREAM-1 */
+                              (int)(saved_lba + (saved_len + 2047) / 2048));
+#else
                 scd_sub_read((void *)0x0C0000, saved_lba + chunk * 16, n);   
+#endif
                 switch_banks();                                   
                 if (cmd != CMD_CHUNK_COMPARE)          /* CMD 47: compare only, no write */
                     for (p = 0; p < bytes; p += 0x4000)
@@ -764,7 +926,21 @@ int main(void)
                 {   
                     volatile uint8_t *disc = (volatile uint8_t *)0x0C0000;
                     volatile uint8_t *cart = (volatile uint8_t *)0x0C8000;
+#if OL_STREAM
+                    {   /* STREAM-1: four bytes at a time, pumping; the byte loop below finds the place */
+                        const volatile uint32_t *dw = (const volatile uint32_t *)disc;
+                        const volatile uint32_t *cw = (const volatile uint32_t *)cart;
+                        int w;
+                        for (w = 0; !novfy && w < bytes / 4; w++) {
+                            if ((w & 255) == 0) cd_pump();
+                            if (dw[w] != cw[w]) break;
+                        }
+                        k = novfy ? bytes : w * 4;
+                    }
+                    for (; !novfy && k < bytes; k++) {
+#else
                     for (k = 0; !novfy && k < bytes; k++) {
+#endif
                         if (disc[k] != cart[k]) {
                             sprintf(tbuf, "MISMATCH C%d +%05X DISC %02X CART %02X ", chunk, k,
                                     disc[k], cart[k]);

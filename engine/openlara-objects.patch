@@ -1,0 +1,2477 @@
+diff -ruN a/src/fixed/camera.h b/src/fixed/camera.h
+--- a/src/fixed/camera.h	2026-10-22 00:04:52.289225441 -0700
++++ b/src/fixed/camera.h	2026-10-22 00:04:52.293224298 -0700
+@@ -425,6 +425,8 @@
+     mode = CAMERA_MODE_LOOK;
+ }
+ 
++int32 gCameraBounce = 0;            // OBJECTS-1: TR1 Camera.bounce (>0 a jolt, <0 a shake)
++
+ void Camera::update()
+ {
+     if (mode == CAMERA_MODE_FREE)
+@@ -524,7 +526,24 @@
+     vec3i dir = target.pos - view.pos;
+     anglesFromVector(dir.x, dir.y, dir.z, angle.x, angle.y);
+ 
+-    matrixSetView(view.pos, angle.x, angle.y);
++    vec3i viewPos = view.pos;       // OBJECTS-1: earthquakes, explosions, the hammer
++    if (gCameraBounce > 0)
++    {
++        viewPos.y += gCameraBounce;
++        gCameraBounce = 0;
++    }
++    else if (gCameraBounce < 0)
++    {
++        viewPos.x += ((rand_draw() - 0x4000) * gCameraBounce) >> 15;
++        viewPos.y += ((rand_draw() - 0x4000) * gCameraBounce) >> 15;
++        viewPos.z += ((rand_draw() - 0x4000) * gCameraBounce) >> 15;
++        gCameraBounce += 5;
++        if (gCameraBounce > 0) {
++            gCameraBounce = 0;
++        }
++    }
++
++    matrixSetView(viewPos, angle.x, angle.y);
+ }
+ 
+ void Camera::toCombat()
+diff -ruN a/src/fixed/common.h b/src/fixed/common.h
+--- a/src/fixed/common.h	2026-10-22 00:04:52.261088585 -0700
++++ b/src/fixed/common.h	2026-10-22 00:04:52.264995571 -0700
+@@ -926,7 +926,7 @@
+     uint8 _reserved;
+     bool visible;
+ 
+-    void modify();
++    bool modify();          // OBJECTS-1: false = no room left for a changeable copy
+     void reset();
+ 
+     void add(ItemObj* item);
+@@ -1099,6 +1099,7 @@
+ #define ITEM_FLAGS_MASK_SHIFT       9
+ #define ITEM_FLAGS_MASK_ALL         31
+ 
++#define ITEM_FLAG_RAISED            (1 << 0)    // OBJECTS-1: rolling block - its sector's floor is raised
+ #define ITEM_FLAG_GRAVITY           (1 << 1)
+ #define ITEM_FLAG_ACTIVE            (1 << 2)
+ #define ITEM_FLAG_STATUS            (3 << ITEM_FLAGS_STATUS_SHIFT)
+@@ -2878,6 +2879,20 @@
+ bool useKey(ItemObj* item, ItemObj* lara);
+ bool usePickup(ItemObj* item);
+ 
++// OBJECTS-1 (traps.h): flipmaps, trigger effects, fire, the items made at level start
++extern uint8 gFlipMaps[10];
++extern int32 gItemsCount;
++extern int32 gCameraBounce;
++extern int32 gLavaParticles;
++bool trapShowOnTrigger(int32 type);
++Room* roomFlipPair(Room* room);
++extern ItemObj* gUpdateNext;
++void flipMap();
++void fxStart(int32 fx, ItemObj* item);
++void fxUpdate();
++void laraBurn(ItemObj* lara, bool kill);
++ItemObj* trapSpawn(ItemType type, Room* room, const vec3i &p, int32 angleY, uint16 itemFlags, uint8 itemIntensity);
++
+ void startLevel(LevelID id);
+ void nextLevel(LevelID next);
+ bool gameSave();
+diff -ruN a/src/fixed/enemy.h b/src/fixed/enemy.h
+--- a/src/fixed/enemy.h	2026-10-22 00:04:52.321809394 -0700
++++ b/src/fixed/enemy.h	2026-10-22 00:04:52.333503825 -0700
+@@ -461,6 +461,44 @@
+         }
+     }
+ 
++    // OBJECTS-1: a visible projectile (the TR1 missiles: mutant shards, centaur bombs, Natla's
++    // bolts) that flies at Lara and can be dodged; the instant shot if the level has no model
++    void fire(ItemType missile, int32 damage, int32 maxDist)
++    {
++        if (level.models[missile].count == 0)
++        {
++            shoot(damage, maxDist);
++            return;
++        }
++
++        if (!tinfo.target || tinfo.target->health <= 0 || tinfo.dist >= maxDist)
++            return;
++
++        vec3i from = pos;
++        from.y += (getBoundingBox(false).minY * 3) >> 2;
++        Room* r = room->getRoom(from.x, from.y, from.z);
++
++        ItemObj* m = trapSpawn(missile, r, from, 0, 0, 128);
++        if (!m)
++        {
++            shoot(damage, maxDist);
++            return;
++        }
++
++        vec3i to = tinfo.target->pos;
++        to.y -= 512;
++        vec3i d = to - from;
++        int32 distH = phd_sqrt(X_SQR(d.x >> 4) + X_SQR(d.z >> 4)) << 4;
++        int32 dist = phd_sqrt(X_SQR(distH >> 4) + X_SQR(d.y >> 4)) << 4;
++        int32 frames = dist / 180 + 1;
++
++        anglesFromVector(d.x, d.y, d.z, m->angle.x, m->angle.y);
++        m->angle.y += int16((rand_logic() - 0x4000) >> 6);     // a little spread
++        m->hSpeed = int16(distH / frames);
++        m->vSpeed = int16(d.y / frames);
++        m->health = int16(damage);
++    }
++
+     void bite(int32 damage, const vec3i &offset, int32 joint)
+     {
+         if (!tinfo.target)
+@@ -2177,7 +2215,7 @@
+             case STATE_FIRE:
+             {
+                 if (!nextState) {
+-                    shoot(DAMAGE_SHOT, 8192);
++                    fire(ITEM_MUTANT_BULLET, DAMAGE_SHOT, 8192);    // OBJECTS-1
+                     nextState = STATE_STOP;
+                 }
+                 break;
+@@ -2273,7 +2311,7 @@
+             {
+                 if (!nextState) {
+                     nextState = STATE_AIM;
+-                    shoot(DAMAGE_SHOT, 8192);
++                    fire(ITEM_CENTAUR_BULLET, DAMAGE_SHOT, 8192);   // OBJECTS-1
+                 }
+                 break;
+             }
+@@ -2559,6 +2597,29 @@
+ 
+     Skater(Room* room) : Human(room, 125, 204) {}
+ 
++    virtual void draw()             // OBJECTS-1: the skateboard, drawn with the same animation
++    {
++        Human::draw();
++
++        if (level.models[ITEM_SKATEBOARD].count <= 0)
++            return;
++
++        uint8 oldType = type;
++        uint16 oldAnim = animIndex;
++        uint16 oldFrame = frameIndex;
++
++        uint16 boardAnim = uint16(animIndex - level.models[ITEM_SKATER].animIndex + level.models[ITEM_SKATEBOARD].animIndex);
++        frameIndex = uint16(frameIndex - level.anims[animIndex].frameBegin + level.anims[boardAnim].frameBegin);
++        animIndex = boardAnim;
++        type = ITEM_SKATEBOARD;
++
++        Human::draw();
++
++        type = oldType;
++        animIndex = oldAnim;
++        frameIndex = oldFrame;
++    }
++
+     virtual int32 deathAnim() { return 13; }
+ 
+     virtual void hit(int32 damage, const vec3i &point, int32 soundId)
+@@ -2732,7 +2793,7 @@
+                 case N_FLY:
+                 {
+                     if (canShot && rand_logic() < 0x0400)      // about one bolt a second
+-                        shoot(100, DIST_SHOT);
++                        fire(ITEM_NATLA_BULLET, 100, DIST_SHOT);    // OBJECTS-1
+                     if (!flying && pos.y >= roomFloor - 128)
+                         return N_STOP;
+                     break;
+@@ -2748,9 +2809,9 @@
+                 case N_FIRE:
+                 {
+                     if (!nextState) {
+-                        shoot(100, DIST_SHOT);
+-                        shoot(100, DIST_SHOT);
+-                        shoot(100, DIST_SHOT);
++                        fire(ITEM_NATLA_BULLET, 100, DIST_SHOT);    // OBJECTS-1
++                        fire(ITEM_NATLA_BULLET, 100, DIST_SHOT);
++                        fire(ITEM_NATLA_BULLET, 100, DIST_SHOT);
+                         nextState = N_STOP;
+                     }
+                     break;
+@@ -2770,7 +2831,7 @@
+                 if (state == N_RUN)
+                     tinfo.tilt = tinfo.turn;
+                 if (canShot && rand_logic() < 0x0600)      // about every 2/3 s
+-                    shoot(50, DIST_SHOT);
++                    fire(ITEM_NATLA_BULLET, 50, DIST_SHOT);         // OBJECTS-1
+                 return (canShot && abs(tinfo.angle) < ANGLE(30)) ? N_STAND : N_RUN;
+             }
+ 
+diff -ruN a/src/fixed/game.h b/src/fixed/game.h
+--- a/src/fixed/game.h	2026-10-22 00:04:52.297155526 -0700
++++ b/src/fixed/game.h	2026-10-22 00:04:52.299850579 -0700
+@@ -35,10 +35,22 @@
+ 
+     uint8* ptr = gSaveData;
+     ItemObj* item = items;
+-    for (int32 i = 0; i < level.itemsCount; i++, item++)
++    int32 count = gItemsCount;      // OBJECTS-1: never past gSaveData (the trailer is 14 bytes)
++    int32 fit = (int32(sizeof(gSaveData)) - 14) / int32(sizeof(ItemSave));
++    if (count > fit) count = fit;
++    for (int32 i = 0; i < count; i++, item++)
+     {
+         ptr = item->save(ptr);
+     }
++
++    // OBJECTS-1: after the items - the flipmaps, the number of items, 'OX'
++    memcpy(ptr, gFlipMaps, sizeof(gFlipMaps));
++    ptr += sizeof(gFlipMaps);
++    *ptr++ = uint8(count >> 8);
++    *ptr++ = uint8(count);
++    *ptr++ = 'O';
++    *ptr++ = 'X';
++
+     gSaveGame.dataSize = ptr - gSaveData;
+ 
+     return osSaveGame();
+@@ -57,14 +69,32 @@
+     startLevel(gLevelID);
+     gSaveGame = tmp;
+ 
++    // OBJECTS-1: the trailer (older saves have none: the level's items, no flipmaps)
++    int32 count = level.itemsCount;
++    const uint8* end = gSaveData + gSaveGame.dataSize;
++    if (gSaveGame.dataSize >= int32(sizeof(gFlipMaps)) + 4 && end[-2] == 'O' && end[-1] == 'X')
++    {
++        count = (end[-4] << 8) | end[-3];
++        memcpy(gFlipMaps, end - 4 - sizeof(gFlipMaps), sizeof(gFlipMaps));
++    }
++    if (count > gItemsCount) {
++        count = gItemsCount;
++    }
++
++    int32 flipped = gSaveGame.flipped;  // the level was loaded unflipped
++    gSaveGame.flipped = 0;
++    if (flipped) {
++        flipMap();
++    }
++
+     inventory.setSlots(gSaveGame.invSlots);
+ 
+     ItemObj::sFirstActive = NULL;
+-    ItemObj::sFirstFree = items + level.itemsCount;
++    ItemObj::sFirstFree = items + gItemsCount;
+ 
+     uint8* ptr = gSaveData;
+     ItemObj* item = items;
+-    for (int32 i = 0; i < level.itemsCount; i++, item++)
++    for (int32 i = 0; i < count; i++, item++)
+     {
+         ptr = item->load(ptr);
+ 
+@@ -139,7 +169,13 @@
+ 
+     gCurTrack = -1;
+ 
++    memset(gFlipMaps, 0, sizeof(gFlipMaps));    // OBJECTS-1
++    gLavaParticles = 0;
++    gFlipEffect = -1;
++    gCameraBounce = 0;
++
+     readLevel((uint8*)data);
++    gItemsCount = level.itemsCount;
+ 
+     // prepare rooms
+     for (int32 i = 0; i < level.roomsCount; i++)
+@@ -191,6 +227,10 @@
+             item->init(rooms + info->roomIndex);
+         }
+ 
++        // OBJECTS-1: the items made at level start (hammer heads, the enemies in eggs and
++        // statues) took the first free slots, in order: they belong to the level now
++        gItemsCount = ItemObj::sFirstFree ? int32(ItemObj::sFirstFree - items) : MAX_ITEMS;
++
+         if (isCutsceneLevel())
+         {
+             gCinematicCamera.initCinematic();
+@@ -244,13 +284,18 @@
+ 
+ void updateItems()
+ {
++    fxUpdate();                     // OBJECTS-1: timed trigger effects
++
++    // OBJECTS-1: an item may now remove another (a flame emitter its flame); deactivate()
++    // moves gUpdateNext on when the item it points at leaves the list
+     ItemObj* item = ItemObj::sFirstActive;
+     while (item)
+     {
+-        ItemObj* next = item->nextActive;
++        gUpdateNext = item->nextActive;
+         item->update();
+-        item = next;
++        item = gUpdateNext;
+     }
++    gUpdateNext = NULL;
+ 
+     if (isCutsceneLevel())
+     {
+diff -ruN a/src/fixed/item.h b/src/fixed/item.h
+--- a/src/fixed/item.h	2026-10-22 00:04:52.249345821 -0700
++++ b/src/fixed/item.h	2026-10-22 00:04:52.257150130 -0700
+@@ -92,7 +92,7 @@
+ 
+ void soundStop(int16 id)
+ {
+-#if defined(__32X__) || defined(__WIN32__) // TODO
++#if (defined(__32X__) && !defined(CD32X)) || defined(__WIN32__) // TODO  (OBJECTS-1: CD32X can stop sounds)
+     return;
+ #endif
+ 
+@@ -411,7 +411,8 @@
+                         case 32 : break; // TODO TR3 footprint
+                         default : LOG("unknown effect command %d (anim %d)\n", fx, animation.index); ASSERT(false);
+                     */
+-                        default : ;
++                        default : fxStart(ptr[1], this); // OBJECTS-1: shakes, earthquake, flood, flipmap
++                            break;
+                     }
+                 }
+                 ptr += 2;
+@@ -588,6 +589,8 @@
+     ItemObj::sFirstActive = this;
+ }
+ 
++ItemObj* gUpdateNext = NULL;                 // OBJECTS-1: updateItems' next item
++
+ void ItemObj::deactivate()
+ {
+     ItemObj* prev = NULL;
+@@ -599,6 +602,9 @@
+ 
+         if (curr == this)
+         {
++            if (gUpdateNext == this) {          // OBJECTS-1: updateItems' next item leaves
++                gUpdateNext = next;
++            }
+             flags &= ~ITEM_FLAG_ACTIVE;
+             nextActive = NULL;
+ 
+@@ -1497,23 +1503,23 @@
+         INIT_ITEM( ADAM                  , Adam );
+         INIT_ITEM( TRAP_FLOOR            , TrapFloor );
+         INIT_ITEM( TRAP_SWING_BLADE      , TrapSwingBlade );
+-        // INIT_ITEM( TRAP_SPIKES           , ??? );
+-        // INIT_ITEM( TRAP_BOULDER          , ??? );
++        INIT_ITEM( TRAP_SPIKES           , TrapSpikes );
++        INIT_ITEM( TRAP_BOULDER          , TrapBoulder );
+         INIT_ITEM( DART                  , Dart );
+         INIT_ITEM( TRAP_DART_EMITTER     , TrapDartEmitter );
+-        // INIT_ITEM( DRAWBRIDGE            , ??? );
+-        // INIT_ITEM( TRAP_SLAM             , ??? );
+-        // INIT_ITEM( TRAP_SWORD            , ??? );
+-        // INIT_ITEM( HAMMER_HANDLE         , ??? );
+-        // INIT_ITEM( HAMMER_BLOCK          , ??? );
+-        // INIT_ITEM( LIGHTNING             , ??? );
+-        // INIT_ITEM( MOVING_OBJECT         , ??? );
++        INIT_ITEM( DRAWBRIDGE            , Drawbridge );
++        INIT_ITEM( TRAP_SLAM             , TrapSlam );
++        INIT_ITEM( TRAP_SWORD            , TrapSword );
++        INIT_ITEM( HAMMER_HANDLE         , ThorHammer );
++        INIT_ITEM( HAMMER_BLOCK          , ThorHead );
++        INIT_ITEM( LIGHTNING             , Lightning );
++        INIT_ITEM( MOVING_OBJECT         , MovingObject );
+         INIT_ITEM( BLOCK_1               , Block );
+         INIT_ITEM( BLOCK_2               , Block );
+         INIT_ITEM( BLOCK_3               , Block );
+         INIT_ITEM( BLOCK_4               , Block );
+-        // INIT_ITEM( MOVING_BLOCK          , ??? );
+-        // INIT_ITEM( TRAP_CEILING          , ??? );
++        INIT_ITEM( MOVING_BLOCK          , MovingBlock );
++        INIT_ITEM( TRAP_CEILING          , TrapCeiling );
+         // INIT_ITEM( TRAP_FLOOR_LOD        , ??? );
+         INIT_ITEM( SWITCH                , Switch );
+         INIT_ITEM( SWITCH_WATER          , SwitchWater );
+@@ -1588,7 +1594,7 @@
+         // INIT_ITEM( PUZZLE_DONE_4         , ??? );
+         INIT_ITEM( LEADBAR               , Pickup );
+         // INIT_ITEM( INV_LEADBAR           , ??? );
+-        // INIT_ITEM( MIDAS_HAND            , ??? );
++        INIT_ITEM( MIDAS_HAND            , MidasHand );
+         INIT_ITEM( KEY_ITEM_1            , Pickup );
+         INIT_ITEM( KEY_ITEM_2            , Pickup );
+         INIT_ITEM( KEY_ITEM_3            , Pickup );
+@@ -1603,15 +1609,15 @@
+         INIT_ITEM( KEYHOLE_4             , KeyHole );
+         // INIT_ITEM( UNUSED_4              , ??? );
+         // INIT_ITEM( UNUSED_5              , ??? );
+-        // INIT_ITEM( SCION_PICKUP_QUALOPEC , ??? );
++        INIT_ITEM( SCION_PICKUP_QUALOPEC , Pickup );
+         INIT_ITEM( SCION_PICKUP_DROP     , Pickup );
+         INIT_ITEM( SCION_TARGET          , ViewTarget );
+-        // INIT_ITEM( SCION_PICKUP_HOLDER   , ??? );
+-        // INIT_ITEM( SCION_HOLDER          , ??? );
++        INIT_ITEM( SCION_PICKUP_HOLDER   , ScionTarget );
++        INIT_ITEM( SCION_HOLDER          , ScionHolder );
+         // INIT_ITEM( UNUSED_6              , ??? );
+         // INIT_ITEM( UNUSED_7              , ??? );
+         // INIT_ITEM( INV_SCION             , ??? );
+-        // INIT_ITEM( EXPLOSION             , ??? );
++        INIT_ITEM( EXPLOSION             , SpriteEffect );
+         // INIT_ITEM( UNUSED_8              , ??? );
+         INIT_ITEM( SPLASH                , SpriteEffect );
+         // INIT_ITEM( UNUSED_9              , ??? );
+@@ -1621,9 +1627,9 @@
+         INIT_ITEM( BLOOD                 , SpriteEffect );
+         // INIT_ITEM( UNUSED_12             , ??? );
+         INIT_ITEM( SMOKE                 , SpriteEffect );
+-        // INIT_ITEM( CENTAUR_STATUE        , ??? );
+-        // INIT_ITEM( CABIN                 , ??? );
+-        // INIT_ITEM( MUTANT_EGG_SMALL      , ??? );
++        INIT_ITEM( CENTAUR_STATUE        , CentaurStatue );
++        INIT_ITEM( CABIN                 , Cabin );
++        INIT_ITEM( MUTANT_EGG_SMALL      , MutantEgg );
+         INIT_ITEM( RICOCHET              , SpriteEffect );
+         INIT_ITEM( SPARKLES              , SpriteEffect );
+         // INIT_ITEM( MUZZLE_FLASH          , ??? );
+@@ -1631,19 +1637,19 @@
+         // INIT_ITEM( UNUSED_14             , ??? );
+         INIT_ITEM( VIEW_TARGET           , ViewTarget );
+         INIT_ITEM( WATERFALL             , Waterfall );
+-        // INIT_ITEM( NATLA_BULLET          , ??? );
+-        // INIT_ITEM( MUTANT_BULLET         , ??? );
+-        // INIT_ITEM( CENTAUR_BULLET        , ??? );
++        INIT_ITEM( NATLA_BULLET          , Missile );
++        INIT_ITEM( MUTANT_BULLET         , Missile );
++        INIT_ITEM( CENTAUR_BULLET        , Missile );
+         // INIT_ITEM( UNUSED_15             , ??? );
+         // INIT_ITEM( UNUSED_16             , ??? );
+-        // INIT_ITEM( LAVA_PARTICLE         , ??? );
+-        INIT_ITEM( LAVA_EMITTER          , LavaEmitter );
+-        // INIT_ITEM( FLAME                 , ??? );
+-        // INIT_ITEM( FLAME_EMITTER         , ??? );
+-        // INIT_ITEM( TRAP_LAVA             , ??? );
+-        // INIT_ITEM( MUTANT_EGG_BIG        , ??? );
+-        // INIT_ITEM( BOAT                  , ??? );
+-        // INIT_ITEM( EARTHQUAKE            , ??? );
++        INIT_ITEM( LAVA_PARTICLE         , LavaParticle );
++        INIT_ITEM( LAVA_EMITTER          , LavaFountain );   // OBJECTS-1 (was LavaEmitter: nothing)
++        INIT_ITEM( FLAME                 , Flame );
++        INIT_ITEM( FLAME_EMITTER         , FlameEmitter );
++        INIT_ITEM( TRAP_LAVA             , TrapLava );
++        INIT_ITEM( MUTANT_EGG_BIG        , MutantEgg );
++        INIT_ITEM( BOAT                  , Boat );
++        INIT_ITEM( EARTHQUAKE            , Earthquake );
+         // INIT_ITEM( UNUSED_17             , ??? );
+         // INIT_ITEM( UNUSED_18             , ??? );
+         // INIT_ITEM( UNUSED_19             , ??? );
+diff -ruN a/src/fixed/object.h b/src/fixed/object.h
+--- a/src/fixed/object.h	2026-10-22 00:04:52.307763893 -0700
++++ b/src/fixed/object.h	2026-10-22 00:04:52.315487579 -0700
+@@ -274,12 +274,17 @@
+ 
+         setDoorState(close, false, room, nextPos.x, nextPos.z); // use the sector behind the door
+ 
+-        // TODO flip rooms
++        // OBJECTS-1: the room's flipmap pair gets the same door (TR1 keeps d1flip / d2flip):
++        // with working flipmaps a closed door would otherwise be open in the other version
++        Room* flip = roomFlipPair(room);
++        if (flip) {
++            setDoorState(close, false, flip, nextPos.x, nextPos.z);
++        }
+     }
+ 
+     void setDoorState(bool close, bool behind, Room* room, int32 x, int32 z)
+     {
+-        room->modify(); // make room->sectors dynamic (non ROM)
++        if (!room->modify()) return; // make room->sectors dynamic (non ROM)
+ 
+         Sector* sector = (Sector*)room->getSector(x, z); // now we can modify room sectors
+ 
+@@ -304,6 +309,10 @@
+ 
+         if (!behind && nextRoom) {
+             setDoorState(close, true, nextRoom, pos.x, pos.z); // use sector from item pos
++            Room* flip = roomFlipPair(nextRoom);            // OBJECTS-1: and its flipmap pair
++            if (flip) {
++                setDoorState(close, true, flip, pos.x, pos.z);
++            }
+         }
+     }
+ };
+@@ -936,7 +945,7 @@
+ 
+     void updateFloor(int32 offset)
+     {
+-        room->modify();
++        if (!room->modify()) return;    // OBJECTS-1: no room left (never write the level data)
+         
+         Sector* sector = (Sector*)room->getSector(pos.x, pos.z);
+ 
+@@ -1125,4 +1134,6 @@
+     }
+ };
+ 
++#include "traps.h"           // OBJECTS-1: the missing TR1 objects
++
+ #endif
+diff -ruN a/src/fixed/room.h b/src/fixed/room.h
+--- a/src/fixed/room.h	2026-10-22 00:04:52.269791693 -0700
++++ b/src/fixed/room.h	2026-10-22 00:04:52.284340739 -0700
+@@ -579,11 +579,15 @@
+     return roomsList;
+ }
+ 
+-void Room::modify()
++bool Room::modify()
+ {
+ //#ifdef ROM_READ
+     if (sectors == data.sectors)
+     {
++        // OBJECTS-1: never past the end of dynSectors (doors and floors of both flipmap versions
++        // are changed now); without room the change is simply not made
++        if (dynSectorsCount + info->xSectors * info->zSectors > MAX_DYN_SECTORS)
++            return false;
+         // convert room->sectors to mutable (non-ROM) data
+         sectors = dynSectors + dynSectorsCount;
+         memcpy((Sector*)sectors, data.sectors, info->xSectors * info->zSectors * sizeof(Sector));
+@@ -593,6 +597,7 @@
+         ASSERT(dynSectorsCount <= MAX_DYN_SECTORS);
+     }
+ //#endif
++    return true;
+ }
+ 
+ void Room::add(ItemObj* item)
+@@ -887,7 +892,21 @@
+ 
+     if (FD_FLOOR_TYPE(*fd) == FLOOR_TYPE_LAVA)
+     {
+-        // TODO lava
++        // OBJECTS-1: Lara on a lava floor catches fire (TR1 Lava_Burn)
++        // only on the lava itself, not on a bridge or a collapsing tile over it: TR1 also wants
++        // the floor without the items on it (GetHeight at y 32000)
++        if (lara && lara->health > 0 && lara->pos.y == lara->roomFloor)
++        {
++            const FloorData* keepData = gLastFloorData;
++            FloorData keepSlant = gLastFloorSlant;
++            const Sector* sector = lara->room->getSector(lara->pos.x, lara->pos.z);
++            int32 raw = sector->getFloor(lara->pos.x, 32000, lara->pos.z);
++            gLastFloorData = keepData;
++            gLastFloorSlant = keepSlant;
++            if (raw == lara->roomFloor) {
++                laraBurn(lara, true);
++            }
++        }
+ 
+         if (FD_END(*fd))
+             return;
+@@ -967,6 +986,8 @@
+         }
+     }
+ 
++    bool flipFlag = false;          // OBJECTS-1: flip the map after the commands (TR1 flip_flag)
++
+     while (1)
+     {
+         uint16 triggerCmd = *fd++;
+@@ -1008,6 +1029,8 @@
+ 
+                 if (!(item->flags & ITEM_FLAG_STATUS) && (item->flags & ITEM_FLAG_ACTIVE)) {
+                     item->flags |= ITEM_FLAG_STATUS_ACTIVE;
++                } else if ((item->flags & ITEM_FLAG_STATUS) == ITEM_FLAG_STATUS_INVISIBLE && trapShowOnTrigger(item->type)) {
++                    item->flags = (item->flags & ~ITEM_FLAG_STATUS) | ITEM_FLAG_STATUS_ACTIVE;   // OBJECTS-1: TR1 TestTriggers
+                 }
+ 
+                 break;
+@@ -1053,17 +1076,52 @@
+                 // TODO flow
+                 break;
+ 
+-            case TRIGGER_ACTION_FLIP:
+-                // TODO flipmap
++            case TRIGGER_ACTION_FLIP:       // OBJECTS-1: TR1 flipmaps
++            {
++                int32 index = FD_ARGS(triggerCmd);
++                if (index >= 10)
++                    break;
++                uint8 &fm = gFlipMaps[index];
++                if (fm & 0x20)              // once
++                    break;
++                if (FD_TRIGGER_TYPE(cmd) == TRIGGER_TYPE_SWITCH) {
++                    fm ^= FD_MASK(data);
++                } else {
++                    fm |= FD_MASK(data);
++                }
++                if ((fm & 0x1F) == 0x1F)
++                {
++                    if (FD_ONCE(data)) {
++                        fm |= 0x20;
++                    }
++                    if (!gSaveGame.flipped) {
++                        flipFlag = true;
++                    }
++                }
++                else if (gSaveGame.flipped)
++                {
++                    flipFlag = true;
++                }
+                 break;
++            }
+ 
+             case TRIGGER_ACTION_FLIP_ON:
+-                // TODO flipmap
++            {
++                int32 index = FD_ARGS(triggerCmd);
++                if (index < 10 && (gFlipMaps[index] & 0x1F) == 0x1F && !gSaveGame.flipped) {
++                    flipFlag = true;
++                }
+                 break;
++            }
+ 
+             case TRIGGER_ACTION_FLIP_OFF:
+-                // TODO flipmap
++            {
++                int32 index = FD_ARGS(triggerCmd);
++                if (index < 10 && (gFlipMaps[index] & 0x1F) == 0x1F && gSaveGame.flipped) {
++                    flipFlag = true;
++                }
+                 break;
++            }
+ 
+             case TRIGGER_ACTION_CAMERA_TARGET:
+             {
+@@ -1105,8 +1163,8 @@
+                 break;
+             }
+ 
+-            case TRIGGER_ACTION_EFFECT:
+-                // TODO effect
++            case TRIGGER_ACTION_EFFECT:     // OBJECTS-1: TR1 flipeffects
++                fxStart(FD_ARGS(triggerCmd), NULL);
+                 break;
+ 
+             case TRIGGER_ACTION_SECRET:
+@@ -1133,6 +1191,10 @@
+             break;
+     };
+ 
++    if (flipFlag) {
++        flipMap();
++    }
++
+     if (cameraItem && (camera->mode == CAMERA_MODE_FIXED || camera->mode == CAMERA_MODE_OBJECT))
+     {
+         camera->lookAtItem = cameraItem;
+diff -ruN a/src/fixed/traps.h b/src/fixed/traps.h
+--- a/src/fixed/traps.h	1969-12-31 16:00:00.000000000 -0800
++++ b/src/fixed/traps.h	2026-10-22 00:04:52.389862332 -0700
+@@ -0,0 +1,1605 @@
++#ifndef H_TRAPS
++#define H_TRAPS
++
++/* ---------------------------------------------------------------------------------------
++ * OBJECTS-1: the TR1 objects the fixed engine left without behaviour, ported from the
++ *   original game's logic (TR1 / Tomb1Main) and the full OpenLara engine (src/objects.h).
++ *   Included at the end of object.h.  Also: flipmaps, trigger effects ("flipeffects"),
++ *   lava floors, Lara on fire.
++ *
++ *   Items that the original creates at level start (Thor's hammer head, the enemy inside a
++ *   mutant egg or a centaur statue) are made in the constructors, so they take the first
++ *   free item slots right after the level's items - the same slots after every level load.
++ *   gItemsCount counts them; the saved game stores them too (game.h).
++ * --------------------------------------------------------------------------------------- */
++
++#define TRAP_BOULDER_DAMAGE_AIR     100
++#define TRAP_SPIKES_DAMAGE          15
++#define TRAP_SLAM_DAMAGE            400
++#define TRAP_CEILING_DAMAGE         300
++#define TRAP_SWORD_DAMAGE           100
++#define TRAP_SWORD_RANGE            1536
++#define TRAP_LIGHTNING_DAMAGE       400
++#define TRAP_LAVA_SPEED             25
++#define TRAP_EGG_RANGE              4096
++#define TRAP_STATUE_RANGE           (3 * 1024 + 512)
++#define TRAP_FLAME_HEAT_DAMAGE      3
++#define TRAP_FLAME_BURN_DAMAGE      7
++
++int32 gItemsCount;                  // level items + the ones made at level start
++uint8 gFlipMaps[10];                // TR1 flipmap[]: trigger mask bits + once (bit 5)
++int32 gFlipEffect = -1;             // TR1 flipeffect / flip_timer
++int32 gFlipTimer;
++
++// a new item from the free list, with known flags (ItemObj::add leaves the old ones)
++// OBJECTS-1: a trap or object that starts invisible (bit 8 of its flags in the level) is shown and
++// started by its trigger, as TR1's TestTriggers does for every object that is not an enemy
++// (status = active). The engine kept such items invisible: no drawing and no collision.
++bool trapShowOnTrigger(int32 type)
++{
++    switch (type)
++    {
++        case ITEM_TRAP_SPIKES: case ITEM_TRAP_BOULDER: case ITEM_TRAP_SLAM: case ITEM_TRAP_SWORD:
++        case ITEM_TRAP_CEILING: case ITEM_HAMMER_HANDLE: case ITEM_HAMMER_BLOCK: case ITEM_LIGHTNING:
++        case ITEM_MOVING_OBJECT: case ITEM_MOVING_BLOCK: case ITEM_DRAWBRIDGE: case ITEM_CABIN:
++        case ITEM_BOAT: case ITEM_EARTHQUAKE: case ITEM_TRAP_LAVA: case ITEM_MIDAS_HAND:
++        case ITEM_FLAME_EMITTER: case ITEM_LAVA_EMITTER: case ITEM_CENTAUR_STATUE: case ITEM_SCION_HOLDER:
++        case ITEM_MUTANT_EGG_SMALL: case ITEM_MUTANT_EGG_BIG:
++        case ITEM_BLOCK_1: case ITEM_BLOCK_2: case ITEM_BLOCK_3: case ITEM_BLOCK_4:
++            return true;
++    }
++    return false;
++}
++
++ItemObj* trapSpawn(ItemType type, Room* room, const vec3i &p, int32 angleY, uint16 itemFlags, uint8 itemIntensity)
++{
++    ItemObj* item = ItemObj::sFirstFree;
++    if (!item)
++        return NULL;
++    ItemObj::sFirstFree = item->nextItem;
++
++    item->type = type;
++    item->pos = p;
++    item->angle.y = angleY;
++    item->intensity = itemIntensity;
++    item->flags = itemFlags;
++
++    return item->init(room);
++}
++
++// a sprite effect (explosion, flame burst) - smoke if the level has no explosion sprites
++void trapExplosion(Room* room, const vec3i &p)
++{
++    ItemType t = (level.models[ITEM_EXPLOSION].count < 0) ? ITEM_EXPLOSION : ITEM_SMOKE;
++    if (level.models[t].count >= 0)
++        return;
++    ItemObj* fx = trapSpawn(t, room, p, 0, 0, 128);
++    if (fx)
++    {
++        fx->timer = 2;
++        fx->flags |= ITEM_FLAG_ANIMATED;
++    }
++}
++
++// TR1 AlterFloorHeight: the floor of the sector under (x, y, z) up/down by offset
++void trapAlterFloor(Room* room, int32 x, int32 y, int32 z, int32 offset)
++{
++    Room* r = room->getRoom(x, y, z);
++    if (!r->modify()) return;           // no room left: never write the level data itself
++
++    Sector* sector = (Sector*)r->getSector(x, z);
++
++    if (sector->floor == NO_FLOOR) {
++        sector->floor = sector->ceiling + (offset >> 8);
++    } else {
++        sector->floor += (offset >> 8);
++        if (sector->floor == sector->ceiling) {
++            sector->floor = NO_FLOOR;
++        }
++    }
++}
++
++int32 trapFloor(Room* room, int32 x, int32 y, int32 z)
++{
++    Room* r = room->getRoom(x, y, z);
++    return r->getSector(x, z)->getFloor(x, y, z);
++}
++
++void trapBlood(Lara* lara, int32 count)
++{
++    for (int32 i = 0; i < count; i++)
++    {
++        vec3i p = lara->pos;
++        p.x += (rand_logic() - 0x4000) >> 7;
++        p.y -= rand_logic() >> 6;
++        p.z += (rand_logic() - 0x4000) >> 7;
++        lara->fxBlood(p, int16(rand_logic() << 1), lara->hSpeed);
++    }
++}
++
++void trapKill(Lara* lara)
++{
++    if (lara->health > 0) {
++        lara->hit(lara->health, lara->pos, 0);
++    }
++}
++
++struct Flame;
++void laraBurn(ItemObj* laraItem, bool kill);
++
++
++// ------------------------------------------------------------------------- flipmaps
++static void flipRoomItems(Room* room, int32 dir)  // TR1 Remove/AddRoomFlipItems
++{
++    for (ItemObj* item = room->firstItem; item; item = item->nextItem)
++    {
++        if ((item->flags & ITEM_FLAG_STATUS) == ITEM_FLAG_STATUS_INVISIBLE)
++            continue;
++
++        if (item->type >= ITEM_BLOCK_1 && item->type <= ITEM_BLOCK_4) {
++            ((Block*)item)->updateFloor(1024 * dir);
++        } else if (item->type == ITEM_MOVING_BLOCK && (item->flags & ITEM_FLAG_RAISED)) {
++            trapAlterFloor(item->room, item->pos.x, item->pos.y, item->pos.z, 2048 * dir);
++        }
++    }
++}
++
++Room* roomFlipPair(Room* room)                  // the other version of a flipmap room, or NULL
++{
++    int32 i = int32(room - rooms);
++    int32 alt = level.roomsInfo[i].alternateRoom;
++    if (alt != NO_ROOM && alt < level.roomsCount)
++        return rooms + alt;
++    for (int32 j = 0; j < level.roomsCount; j++)
++        if (level.roomsInfo[j].alternateRoom == i)
++            return rooms + j;
++    return NULL;
++}
++
++void flipMap()
++{
++    for (int32 i = 0; i < level.roomsCount; i++)
++    {
++        int32 alt = level.roomsInfo[i].alternateRoom;   // the level's own data: never swapped
++        if (alt == NO_ROOM || alt >= level.roomsCount)
++            continue;
++
++        Room* a = rooms + i;
++        Room* b = rooms + alt;
++
++        flipRoomItems(a, 1);
++
++        Room tmp = *a;
++        ItemObj* itemsA = a->firstItem;
++        ItemObj* itemsB = b->firstItem;
++        *a = *b;
++        *b = tmp;
++        a->firstItem = itemsA;      // the items stay in their room (index)
++        b->firstItem = itemsB;
++
++        flipRoomItems(a, -1);
++    }
++
++    gSaveGame.flipped ^= 1;
++}
++
++
++// ------------------------------------------------------------------------- effects
++void fxStart(int32 fx, ItemObj* item)
++{
++    Lara* lara = players[0];
++
++    switch (fx)
++    {
++        case FX_ROTATE_180:
++            if (item) item->angle.y += ANGLE_180;
++            break;
++
++        case FX_FLOOR_SHAKE:                // TR1 dino_stomp: a shake by the distance
++        {
++            if (!lara) break;
++            const vec3i &p = item ? item->pos : lara->pos;
++            vec3i d = p - lara->extraL->camera.view.pos;
++            int32 dist = phd_sqrt(X_SQR(d.x >> 4) + X_SQR(d.y >> 4) + X_SQR(d.z >> 4)) << 4;
++            if (dist < 16 * 1024) {
++                gCameraBounce = 100 * (16 * 1024 - dist) / (16 * 1024);
++            }
++            break;
++        }
++
++        case FX_LARA_NORMAL:
++            if (lara) lara->animSet(11, true);  // Lara::ANIM_STAND
++            break;
++
++        case FX_LARA_BUBBLES:
++            if (lara) lara->fxBubbles(lara->room, JOINT_HEAD, _vec3i(0, 0, 50));
++            break;
++
++        case FX_FINISH_LEVEL:
++            nextLevel(LevelID(gLevelID + 1));
++            break;
++
++        case FX_EARTHQUAKE:
++        case FX_FLOOD:
++        case FX_STAIRS2SLOPE:
++            gFlipEffect = fx;               // timed: fxUpdate
++            gFlipTimer = 0;
++            break;
++
++        case FX_EXPLOSION:
++            soundPlay(SND_EXPLOSION, NULL);
++            gCameraBounce = -75;
++            break;
++
++        case FX_LARA_HANDSFREE:
++            if (lara) lara->extraL->weaponState = WEAPON_STATE_FREE;
++            break;
++
++        case FX_FLIP_MAP:
++            flipMap();
++            break;
++
++        default: ;                          // cut-scene mesh swaps and guns: not here
++    }
++}
++
++void fxUpdate()                             // every logic frame: the timed effects
++{
++    if (gFlipEffect < 0)
++        return;
++
++    Lara* lara = players[0];
++
++    switch (gFlipEffect)
++    {
++        case FX_EARTHQUAKE:                 // TR1 earth_quake
++            if (gFlipTimer == 0) {
++                soundPlay(SND_EXPLOSION, NULL);
++                gCameraBounce = -250;
++            } else if (gFlipTimer == 3 || gFlipTimer == 35) {
++                soundPlay(SND_BOULDER, NULL);
++            } else if (gFlipTimer == 20 || gFlipTimer == 50 || gFlipTimer == 70) {
++                soundPlay(SND_STOMP, NULL);
++            }
++            if (++gFlipTimer >= 105) gFlipEffect = -1;
++            break;
++
++        case FX_FLOOD:                      // TR1 flood_fx
++            if (gFlipTimer == 0 && lara) {
++                soundPlay(SND_FLOOD, &lara->pos);
++            }
++            if (++gFlipTimer > 4 * 30) gFlipEffect = -1;
++            break;
++
++        case FX_STAIRS2SLOPE:
++            if (++gFlipTimer > 5) {
++                soundPlay(SND_STAIRS2SLOPE, NULL);
++                gFlipEffect = -1;
++            }
++            break;
++
++        default:
++            gFlipEffect = -1;
++    }
++}
++
++
++// ------------------------------------------------------------------------- flames
++struct Flame : ItemObj
++{
++    // timer >= 0: a fire on the ground (0 = ready to burn Lara, else frames to wait)
++    // timer < 0:  on Lara, at joint -1 - timer
++    Flame(Room* room) : ItemObj(room)
++    {
++        flags &= ~ITEM_FLAG_COLLISION;
++        frameIndex = 0;
++        timer = 0;
++        activate();
++    }
++
++    virtual void update()
++    {
++        int32 frames = -level.models[type].count;
++        if (frames > 0) {
++            frameIndex = (frameIndex + 1) % frames;
++        }
++
++        Lara* lara = getLara(pos);
++
++        if (timer < 0)
++        {
++            if (lara->waterState != WATER_STATE_ABOVE)    // in the water: out
++            {
++                remove();
++                return;
++            }
++            pos = lara->pos + lara->getJoint(-1 - timer, _vec3i(0, 0, 0));
++            if (room != lara->room) {
++                room->remove(this);
++                lara->room->add(this);
++            }
++            soundPlay(SND_FLAME, &pos);
++            lara->hit(TRAP_FLAME_BURN_DAMAGE, pos, 0);
++            return;
++        }
++
++        soundPlay(SND_FLAME, &pos);
++
++        if (timer > 0) {
++            timer--;
++            return;
++        }
++
++        if (lara->health <= 0)
++            return;
++
++        vec3i d = lara->pos - pos;
++        if (abs(d.x) < 600 && abs(d.z) < 600 && abs(d.y) < 600)
++        {
++            lara->hit(TRAP_FLAME_HEAT_DAMAGE, pos, 0);
++            if (X_SQR(d.x) + X_SQR(d.z) < X_SQR(300))
++            {
++                timer = 100;
++                laraBurn(lara, false);
++            }
++        }
++    }
++};
++
++void laraBurn(ItemObj* laraItem, bool kill)  // TR1 LaraBurn / Lava_Burn
++{
++    Lara* lara = (Lara*)laraItem;
++
++    if (lara->waterState != WATER_STATE_ABOVE)
++        return;
++    if (level.models[ITEM_FLAME].count >= 0)    // no flame sprites in this level
++    {
++        if (kill) trapKill(lara);
++        return;
++    }
++
++    int32 count = kill ? 10 : 1;
++    for (int32 i = 0; i < count; i++)
++    {
++        int32 joint = kill ? (rand_logic() % 15) : 0;
++        ItemObj* flame = trapSpawn(ITEM_FLAME, lara->room, lara->pos, 0, 0, 128);
++        if (flame) {
++            flame->timer = int16(-1 - joint);
++        }
++    }
++
++    if (kill) {
++        trapKill(lara);
++    }
++}
++
++struct FlameEmitter : Object
++{
++    FlameEmitter(Room* room) : Object(room)
++    {
++        flags &= ~ITEM_FLAG_COLLISION;
++    }
++
++    virtual void update()
++    {
++        ItemObj* flame = (ItemObj*)extra;
++
++        if (isActive())
++        {
++            if (!flame) {
++                extra = (uint8*)trapSpawn(ITEM_FLAME, room, pos, 0, 0, 128);
++            }
++        }
++        else if (flame)
++        {
++            flame->remove();
++            extra = NULL;
++            deactivate();
++        }
++    }
++
++    virtual void draw() {}
++};
++
++
++// ------------------------------------------------------------------------- boulder
++struct TrapBoulder : Object
++{
++    enum {
++        STATE_SET,
++        STATE_ROLL
++    };
++
++    TrapBoulder(Room* room) : Object(room) {}
++
++    virtual void update()
++    {
++        uint16 status = flags & ITEM_FLAG_STATUS;
++
++        if (status == ITEM_FLAG_STATUS_ACTIVE)
++        {
++            if (pos.y < roomFloor)
++            {
++                if (!(flags & ITEM_FLAG_GRAVITY))
++                {
++                    flags |= ITEM_FLAG_GRAVITY;
++                    vSpeed = -10;
++                }
++            }
++            else if (state == STATE_SET)
++            {
++                goalState = STATE_ROLL;
++            }
++
++            vec3i old = pos;
++
++            animProcess();
++            updateRoom();
++            checkTrigger(gLastFloorData, NULL);
++
++            if (pos.y >= roomFloor - 256)
++            {
++                flags &= ~ITEM_FLAG_GRAVITY;
++                vSpeed = 0;
++                pos.y = roomFloor;
++            }
++
++            int32 s, c;
++            sincos(angle.y, s, c);
++            int32 x = pos.x + (512 * s >> FIXED_SHIFT);
++            int32 z = pos.z + (512 * c >> FIXED_SHIFT);
++
++            if (trapFloor(room, x, pos.y, z) < pos.y)   // a wall ahead: stop
++            {
++                flags &= ~(ITEM_FLAG_STATUS | ITEM_FLAG_GRAVITY);
++                flags |= ITEM_FLAG_STATUS_INACTIVE;
++                pos.x = old.x;
++                pos.z = old.z;
++                hSpeed = 0;
++                vSpeed = 0;
++                hitMask = 0;
++            }
++        }
++        else if (status == ITEM_FLAG_STATUS_INACTIVE && !isActive())
++        {
++            int32 index = int32((ItemObj*)this - items); // back to the start
++            if (index < level.itemsCount)
++            {
++                const ItemObjInfo* info = level.itemsInfo + index;
++                Room* start = rooms + info->roomIndex;
++                pos.x = info->pos.x + (start->info->x << 8);
++                pos.y = info->pos.y;
++                pos.z = info->pos.z + (start->info->z << 8);
++                if (room != start) {
++                    room->remove(this);
++                    start->add(this);
++                }
++            }
++            animSet(level.models[type].animIndex, true);
++            flags &= ~ITEM_FLAG_STATUS;
++            deactivate();
++        }
++    }
++
++    virtual void collide(Lara* lara, CollisionInfo* cinfo)
++    {
++        if ((flags & ITEM_FLAG_STATUS) != ITEM_FLAG_STATUS_ACTIVE)
++        {
++            if ((flags & ITEM_FLAG_STATUS) != ITEM_FLAG_STATUS_INVISIBLE) {
++                collideDefault(lara, cinfo);
++            }
++            return;
++        }
++
++        if (lara->health <= 0)
++            return;
++
++        if (!updateHitMask(lara, cinfo))
++            return;
++
++        if (lara->flags & ITEM_FLAG_GRAVITY)            // in the air: knocked
++        {
++            if (cinfo->enemyPush) {
++                collidePush(lara, cinfo, true);
++            }
++            lara->hit(TRAP_BOULDER_DAMAGE_AIR, pos, 0);
++            trapBlood(lara, 1);
++        }
++        else                                            // on the ground: run over
++        {
++            trapKill(lara);
++            if (lara->room != room) {
++                lara->room->remove(lara);
++                room->add(lara);
++            }
++            lara->angle.x = 0;
++            lara->angle.y = angle.y;
++            lara->angle.z = 0;
++            lara->animSet(Lara::ANIM_DEATH_BOULDER, true);
++            lara->flags &= ~ITEM_FLAG_GRAVITY;
++            lara->vSpeed = 0;
++            lara->hSpeed = 0;
++            trapBlood(lara, 15);
++        }
++    }
++};
++
++
++// ------------------------------------------------------------------------- spikes
++struct TrapSpikes : Object
++{
++    TrapSpikes(Room* room) : Object(room) {}
++
++    virtual void update() {}
++
++    virtual void collide(Lara* lara, CollisionInfo* cinfo)
++    {
++        if (lara->health <= 0)
++            return;
++
++        if (!updateHitMask(lara, cinfo))
++            return;
++
++        int32 num = rand_logic() / 24576;
++
++        if (lara->flags & ITEM_FLAG_GRAVITY)
++        {
++            if (lara->vSpeed > 0)               // fell onto them
++            {
++                lara->hit(lara->health, pos, 0);
++                num = 20;
++            }
++        }
++        else if (abs(lara->hSpeed) < 30)        // walking carefully: nothing
++        {
++            return;
++        }
++
++        lara->hit(TRAP_SPIKES_DAMAGE, pos, 0);
++        trapBlood(lara, num);
++
++        if (lara->health <= 0)
++        {
++            lara->animSet(Lara::ANIM_DEATH_SPIKES, true);
++            lara->pos.y = pos.y;
++            lara->flags &= ~ITEM_FLAG_GRAVITY;
++            lara->vSpeed = 0;
++        }
++    }
++};
++
++
++// ------------------------------------------------------------------------- slamming doors
++struct TrapSlam : Object
++{
++    enum {
++        STATE_OPEN,
++        STATE_SLAM
++    };
++
++    TrapSlam(Room* room) : Object(room) {}
++
++    virtual void update()
++    {
++        if (isActive())
++        {
++            goalState = STATE_SLAM;
++            if (hitMask && state == STATE_SLAM)
++            {
++                Lara* lara = getLara(pos);
++                lara->hit(TRAP_SLAM_DAMAGE, pos, 0);
++                trapBlood(lara, 2);
++            }
++        }
++        else
++        {
++            goalState = STATE_OPEN;
++        }
++        hitMask = 0;
++
++        animProcess();
++    }
++
++    virtual void collide(Lara* lara, CollisionInfo* cinfo)
++    {
++        if ((flags & ITEM_FLAG_STATUS) == ITEM_FLAG_STATUS_ACTIVE) {
++            updateHitMask(lara, cinfo);
++        } else if ((flags & ITEM_FLAG_STATUS) != ITEM_FLAG_STATUS_INVISIBLE) {
++            collideDefault(lara, cinfo);
++        }
++    }
++};
++
++
++// ------------------------------------------------------------------------- falling ceiling
++struct TrapCeiling : Object
++{
++    enum {
++        STATE_SET,
++        STATE_FALL,
++        STATE_DOWN
++    };
++
++    TrapCeiling(Room* room) : Object(room) {}
++
++    virtual void update()
++    {
++        if (state == STATE_SET)
++        {
++            goalState = STATE_FALL;
++            flags |= ITEM_FLAG_GRAVITY;
++        }
++        else if (state == STATE_FALL && hitMask)
++        {
++            Lara* lara = getLara(pos);
++            lara->hit(TRAP_CEILING_DAMAGE, pos, 0);
++        }
++        hitMask = 0;
++
++        animProcess();
++
++        if ((flags & ITEM_FLAG_STATUS) == ITEM_FLAG_STATUS_INACTIVE)
++        {
++            deactivate();
++            return;
++        }
++
++        updateRoom();
++
++        if (state == STATE_FALL && pos.y >= roomFloor)
++        {
++            goalState = STATE_DOWN;
++            pos.y = roomFloor;
++            vSpeed = 0;
++            flags &= ~ITEM_FLAG_GRAVITY;
++        }
++    }
++
++    virtual void collide(Lara* lara, CollisionInfo* cinfo)
++    {
++        if ((flags & ITEM_FLAG_STATUS) == ITEM_FLAG_STATUS_ACTIVE) {
++            updateHitMask(lara, cinfo);
++        } else if ((flags & ITEM_FLAG_STATUS) != ITEM_FLAG_STATUS_INVISIBLE) {
++            collideDefault(lara, cinfo);
++        }
++    }
++};
++
++
++// ------------------------------------------------------------------------- Damocles swords
++struct TrapSword : Object
++{
++    // state / goalState: the drift x / z per frame (as TR1), turnSpeed: the spin
++    TrapSword(Room* room) : Object(room)
++    {
++        angle.y = int16(rand_logic() << 1);
++        turnSpeed = int16((rand_logic() - 0x4000) >> 4);
++        vSpeed = 50;
++        roomFloor = trapFloor(room, pos.x, pos.y, pos.z);
++    }
++
++    virtual void update()
++    {
++        if (flags & ITEM_FLAG_GRAVITY)
++        {
++            angle.y += turnSpeed;
++            vSpeed += (vSpeed < 128) ? GRAVITY : 1;
++            pos.y += vSpeed;
++            pos.x += int8(state);
++            pos.z += int8(goalState);
++
++            if (pos.y > roomFloor)
++            {
++                soundPlay(SND_SWORD, &pos);
++                pos.y = roomFloor + 10;
++                flags &= ~(ITEM_FLAG_GRAVITY | ITEM_FLAG_STATUS);
++                flags |= ITEM_FLAG_STATUS_INACTIVE;
++                deactivate();
++            }
++        }
++        else if (pos.y != roomFloor)
++        {
++            angle.y += turnSpeed;
++
++            Lara* lara = getLara(pos);
++            vec3i d = lara->pos - pos;
++
++            if (abs(d.x) <= TRAP_SWORD_RANGE && abs(d.z) <= TRAP_SWORD_RANGE && d.y > 0 && d.y < 3 * 1024)
++            {
++                state = uint8(int8(d.x >> 5));
++                goalState = uint8(int8(d.z >> 5));
++                flags |= ITEM_FLAG_GRAVITY;
++            }
++        }
++    }
++
++    virtual void collide(Lara* lara, CollisionInfo* cinfo)
++    {
++        if (!collideBounds(lara, cinfo))
++            return;
++
++        if (cinfo->enemyPush) {
++            collidePush(lara, cinfo, false);
++        }
++
++        if (flags & ITEM_FLAG_GRAVITY)
++        {
++            lara->hit(TRAP_SWORD_DAMAGE, pos, 0);
++            trapBlood(lara, 1);
++        }
++    }
++};
++
++
++// ------------------------------------------------------------------------- Thor's hammer
++struct ThorHead : Object
++{
++    ThorHead(Room* room) : Object(room) {}
++
++    virtual void update() {}
++
++    virtual void collide(Lara* lara, CollisionInfo* cinfo)
++    {
++        if (state != 2) {                       // not while it swings down
++            collideDefault(lara, cinfo);
++        }
++    }
++};
++
++struct ThorHammer : Object
++{
++    enum {
++        STATE_SET,
++        STATE_TEASE,
++        STATE_ACTIVE,
++        STATE_DONE
++    };
++
++    ThorHammer(Room* room) : Object(room)
++    {
++        extra = (uint8*)trapSpawn(ITEM_HAMMER_BLOCK, room, pos, angle.y, 0, intensity);
++        syncHead();
++    }
++
++    vec3i headPos() const
++    {
++        return pos + getBlockOffset(angle.y, -3 * 1024);
++    }
++
++    void syncHead()
++    {
++        ItemObj* head = (ItemObj*)extra;
++        if (!head)
++            return;
++        int32 headAnim = level.models[ITEM_HAMMER_BLOCK].animIndex;
++        int32 handleAnim = level.models[ITEM_HAMMER_HANDLE].animIndex;
++        head->animIndex = uint16(animIndex + headAnim - handleAnim);
++        head->frameIndex = uint16(frameIndex - level.anims[animIndex].frameBegin + level.anims[head->animIndex].frameBegin);
++        head->state = state;
++        head->pos = pos;
++        head->angle = angle;
++    }
++
++    virtual void update()
++    {
++        switch (state)
++        {
++            case STATE_SET:
++                if (isActive()) {
++                    goalState = STATE_TEASE;
++                } else {
++                    deactivate();
++                    flags &= ~ITEM_FLAG_STATUS;
++                }
++                break;
++
++            case STATE_TEASE:
++                goalState = isActive() ? STATE_ACTIVE : STATE_SET;
++                break;
++
++            case STATE_ACTIVE:
++            {
++                int32 frame = frameIndex - level.anims[animIndex].frameBegin;
++                if (frame > 30)
++                {
++                    vec3i p = headPos();
++                    Lara* lara = getLara(pos);
++                    if (lara->health > 0 && abs(lara->pos.x - p.x) < 520 && abs(lara->pos.z - p.z) < 520)
++                    {
++                        trapKill(lara);
++                        lara->angle.y = angle.y;
++                        lara->animSet(Lara::ANIM_DEATH_BOULDER, true);
++                        lara->flags &= ~ITEM_FLAG_GRAVITY;
++                        lara->vSpeed = 0;
++                        lara->hSpeed = 0;
++                    }
++                }
++                break;
++            }
++
++            case STATE_DONE:
++            {
++                updateRoom();
++                checkTrigger(gLastFloorData, NULL);
++
++                Lara* lara = getLara(pos);
++                if (lara->health > 0) {         // the head is a floor now
++                    vec3i p = headPos();
++                    trapAlterFloor(room, p.x, pos.y, p.z, -2 * 1024);
++                }
++                flags &= ~ITEM_FLAG_STATUS;
++                flags |= ITEM_FLAG_STATUS_INACTIVE;
++                deactivate();
++                break;
++            }
++        }
++
++        animProcess(false);
++        syncHead();
++    }
++
++    virtual void collide(Lara* lara, CollisionInfo* cinfo)
++    {
++        collideDefault(lara, cinfo);
++    }
++
++    virtual uint8* load(uint8* data)
++    {
++        data = ItemObj::load(data);
++        if (state == STATE_DONE && (flags & ITEM_FLAG_STATUS) == ITEM_FLAG_STATUS_INACTIVE)
++        {
++            vec3i p = headPos();
++            trapAlterFloor(room, p.x, pos.y, p.z, -2 * 1024);
++        }
++        syncHead();
++        return data;
++    }
++};
++
++
++// ------------------------------------------------------------------------- lightning
++struct Lightning : Object
++{
++    // hSpeed: frames to the next change, vSpeed: 1 = flash on
++    Lightning(Room* room) : Object(room)
++    {
++        hSpeed = 1;
++        vSpeed = 0;
++        flags &= ~ITEM_FLAG_COLLISION;
++    }
++
++    virtual void update()
++    {
++        if (!isActive())
++        {
++            hSpeed = 1;
++            vSpeed = 0;
++            if (gSaveGame.flipped) {
++                flipMap();
++            }
++            flags &= ~ITEM_FLAG_STATUS;
++            deactivate();
++            return;
++        }
++
++        if (--hSpeed > 0)
++            return;
++
++        if (vSpeed)                             // flash over
++        {
++            vSpeed = 0;
++            hSpeed = int16(35 + (rand_logic() * 45 >> 15));
++            if (gSaveGame.flipped) {
++                flipMap();
++            }
++        }
++        else                                    // flash
++        {
++            vSpeed = 1;
++            hSpeed = 20;
++
++            int32 radius = (level.models[type].count > 1) ? (5 * 1024 / 2) : 1024;
++            Lara* lara = getLara(pos);
++            vec3i d = lara->pos - pos;
++            if (lara->health > 0 && X_SQR(d.x >> 4) + X_SQR(d.z >> 4) < X_SQR(radius >> 4)) {
++                lara->hit(TRAP_LIGHTNING_DAMAGE, pos, 0);
++            }
++
++            if (!gSaveGame.flipped) {
++                flipMap();
++            }
++            soundPlay(SND_LIGHTNING, &pos);
++        }
++    }
++
++    virtual void draw()
++    {
++        if (level.models[type].count > 0) {
++            Object::draw();
++        }
++    }
++};
++
++
++// ------------------------------------------------------------------------- moving things
++struct MovingObject : Object
++{
++    MovingObject(Room* room) : Object(room) {}
++
++    virtual void update()
++    {
++        goalState = isActive() ? 1 : 0;
++        animProcess();
++        updateRoom();
++    }
++
++    virtual void collide(Lara* lara, CollisionInfo* cinfo)
++    {
++        collideDefault(lara, cinfo);
++    }
++};
++
++struct MovingBlock : Object                 // TR1 rolling block (Tomb of Qualopec)
++{
++    enum {
++        STATE_START,
++        STATE_END
++    };
++
++    // the block raises the floor of its sector by 2 blocks while it rests (TR1 AlterFloorHeight);
++    // ITEM_FLAG_RAISED says it is raised now (saved with the flags, so a load knows)
++    MovingBlock(Room* room) : Object(room)
++    {
++        flags &= ~ITEM_FLAG_RAISED;
++        if ((flags & ITEM_FLAG_STATUS) != ITEM_FLAG_STATUS_INVISIBLE) {
++            raise(true);
++        }
++    }
++
++    void raise(bool on)
++    {
++        if (on == ((flags & ITEM_FLAG_RAISED) != 0))
++            return;
++        trapAlterFloor(room, pos.x, pos.y, pos.z, on ? -2 * 1024 : 2 * 1024);
++        flags ^= ITEM_FLAG_RAISED;
++    }
++
++    virtual void update()
++    {
++        if (isActive())
++        {
++            if (state == STATE_START)
++            {
++                goalState = STATE_END;
++                raise(false);
++            }
++        }
++        else if (state == STATE_END)
++        {
++            goalState = STATE_START;
++            raise(false);
++        }
++
++        animProcess();
++        updateRoom();
++
++        if ((flags & ITEM_FLAG_STATUS) == ITEM_FLAG_STATUS_INACTIVE)
++        {
++            flags &= ~ITEM_FLAG_STATUS;
++            flags |= ITEM_FLAG_STATUS_ACTIVE;
++            pos.x = (pos.x & ~1023) + 512;
++            pos.z = (pos.z & ~1023) + 512;
++            raise(true);
++        }
++    }
++
++    virtual void collide(Lara* lara, CollisionInfo* cinfo)
++    {
++        collideDefault(lara, cinfo);
++    }
++
++    virtual uint8* load(uint8* data)
++    {
++        raise(false);                           // the floor as it was at level start, here
++        data = ItemObj::load(data);
++        if (flags & ITEM_FLAG_RAISED) {         // raised where the save says
++            flags &= ~ITEM_FLAG_RAISED;
++            raise(true);
++        }
++        return data;
++    }
++};
++
++struct Drawbridge : Object
++{
++    enum {
++        STATE_UP,
++        STATE_DOWN
++    };
++
++    Drawbridge(Room* room) : Object(room) {}
++
++    virtual void update()
++    {
++        goalState = isActive() ? STATE_DOWN : STATE_UP;
++        animProcess();
++    }
++
++    virtual void collide(Lara* lara, CollisionInfo* cinfo)
++    {
++        if (state == STATE_UP) {
++            collideDefault(lara, cinfo);
++        }
++    }
++};
++
++struct Boat : Object                        // Natla's Mines
++{
++    enum {
++        STATE_IDLE = 1,
++        STATE_MOVE,
++        STATE_STOP
++    };
++
++    Boat(Room* room) : Object(room) {}
++
++    virtual void update()
++    {
++        switch (state)
++        {
++            case STATE_IDLE: goalState = STATE_MOVE; break;
++            case STATE_MOVE: goalState = STATE_STOP; break;
++            case STATE_STOP:
++                flags &= ~ITEM_FLAG_STATUS;
++                flags |= ITEM_FLAG_STATUS_INVISIBLE;
++                deactivate();
++                return;
++        }
++        animProcess();
++        updateRoom();
++    }
++};
++
++struct Cabin : Object                       // Natla's Mines: each lever drops it one step
++{
++    enum {
++        STATE_UP,
++        STATE_DOWN_1,
++        STATE_DOWN_2,
++        STATE_DOWN_3,
++        STATE_GROUND
++    };
++
++    Cabin(Room* room) : Object(room) {}
++
++    virtual void update()
++    {
++        if ((flags & ITEM_FLAG_MASK) == ITEM_FLAG_MASK)
++        {
++            if (state <= STATE_DOWN_2) {
++                goalState = state + 1;
++            }
++            flags &= ~(ITEM_FLAG_MASK | ITEM_FLAG_ONCE | ITEM_FLAG_REVERSE);   // TR1: item->flags = 0
++        }
++
++        if (state == STATE_GROUND)
++        {
++            gFlipMaps[3] = 0x1F;
++            flipMap();
++            flags &= ~ITEM_FLAG_STATUS;
++            flags |= ITEM_FLAG_STATUS_INVISIBLE;
++            deactivate();
++            return;
++        }
++
++        animProcess();
++    }
++};
++
++struct Earthquake : Object                  // The Great Pyramid
++{
++    Earthquake(Room* room) : Object(room)
++    {
++        flags &= ~ITEM_FLAG_COLLISION;
++    }
++
++    virtual void update()
++    {
++        if (!isActive())
++            return;
++
++        if (rand_draw() < 0x100)
++        {
++            gCameraBounce = -150;
++            soundPlay(SND_BOULDER, NULL);
++        }
++        else if (rand_logic() < 0x400)
++        {
++            gCameraBounce = 50;
++            soundPlay(SND_STOMP, NULL);
++        }
++    }
++
++    virtual void draw() {}
++};
++
++
++// ------------------------------------------------------------------------- lava wedge
++struct TrapLava : Object                    // Atlantis, The Great Pyramid
++{
++    TrapLava(Room* room) : Object(room) {}
++
++    virtual void update()
++    {
++        updateRoom();
++
++        if ((flags & ITEM_FLAG_STATUS) != ITEM_FLAG_STATUS_INACTIVE)
++        {
++            vec3i step = getBlockOffset(angle.y, -TRAP_LAVA_SPEED);
++            vec3i ahead = getBlockOffset(angle.y, -2 * 1024);
++            pos.x += step.x;
++            pos.z += step.z;
++
++            if (trapFloor(room, pos.x + ahead.x, pos.y, pos.z + ahead.z) != pos.y)
++            {
++                flags &= ~ITEM_FLAG_STATUS;
++                flags |= ITEM_FLAG_STATUS_INACTIVE;
++            }
++        }
++
++        if (hitMask)
++        {
++            Lara* lara = getLara(pos);
++            if (lara->health > 0) {
++                laraBurn(lara, true);
++            }
++        }
++        hitMask = 0;
++    }
++
++    virtual void collide(Lara* lara, CollisionInfo* cinfo)
++    {
++        if (!updateHitMask(lara, cinfo)) {
++            collideDefault(lara, cinfo);
++        }
++    }
++};
++
++
++// ------------------------------------------------------------------------- Midas' hand
++struct MidasHand : Object                   // Palace Midas: lead bar -> gold bar
++{
++    MidasHand(Room* room) : Object(room) {}
++
++    virtual void update() {}
++
++    virtual void collide(Lara* lara, CollisionInfo* cinfo)
++    {
++        collideDefault(lara, cinfo);
++
++        if (lara->health <= 0 || (lara->flags & ITEM_FLAG_GRAVITY) || lara->state != Lara::STATE_STOP)
++            return;
++
++        vec3i d = lara->pos - pos;
++
++        if (abs(d.x) < 512 && abs(d.z) < 512)   // on its sector: turned to gold
++        {
++            trapKill(lara);
++            lara->animSet(level.models[ITEM_LARA_SPEC].animIndex + 1, true);
++            lara->flags &= ~ITEM_FLAG_GRAVITY;
++            lara->vSpeed = 0;
++            lara->hSpeed = 0;
++            lara->extraL->weaponState = WEAPON_STATE_BUSY;
++            return;
++        }
++
++        if (abs(d.x) >= 700 || abs(d.z) >= 700)
++            return;
++
++        if (lara->extraL->weaponState != WEAPON_STATE_FREE)
++            return;
++
++        if (!(lara->input & IN_ACTION) && (inventory.useSlot == SLOT_MAX))
++            return;
++
++        if (inventory.useSlot == SLOT_MAX)
++        {
++            if (inventory.numKeys > 0) {
++                inventory.open(lara, INV_PAGE_USE, type);
++                return;
++            }
++        }
++        else if (inventory.useSlot == SLOT_LEADBAR)
++        {
++            inventory.remove(SLOT_LEADBAR, 1);
++            inventory.useSlot = SLOT_MAX;
++            inventory.add(ITEM_PUZZLE_1);
++
++            lara->angle.y = ANGLE_90;
++            lara->pos.x = pos.x - 612;
++            lara->animSet(level.models[ITEM_LARA_SPEC].animIndex, true);
++            lara->extraL->weaponState = WEAPON_STATE_BUSY;
++            return;
++        }
++        else
++        {
++            inventory.useSlot = SLOT_MAX;
++        }
++
++        soundPlay(SND_NO, &lara->pos);
++    }
++};
++
++
++// ------------------------------------------------------------------------- eggs, statues
++struct MutantEgg : Object                   // Atlantis, The Great Pyramid
++{
++    enum {
++        STATE_IDLE,
++        STATE_EXPLODE
++    };
++
++    MutantEgg(Room* room) : Object(room)
++    {
++        ItemType enemy;
++        switch ((flags & ITEM_FLAG_MASK) >> ITEM_FLAGS_MASK_SHIFT)
++        {
++            case 1  : enemy = ITEM_MUTANT_2; break;
++            case 2  : enemy = ITEM_CENTAUR;  break;
++            case 4  : enemy = ITEM_ADAM;     break;
++            case 8  : enemy = ITEM_MUTANT_3; break;
++            default : enemy = ITEM_MUTANT_1;
++        }
++        flags &= ~(ITEM_FLAG_MASK | ITEM_FLAG_REVERSE);
++        visibleMask = 0xFFFE00;
++        // the enemy inside: hidden until the egg opens (ONCE -> invisible, see ItemObj)
++        extra = (uint8*)trapSpawn(enemy, room, pos, angle.y, ITEM_FLAG_ONCE, intensity);
++    }
++
++    void hatch()
++    {
++        goalState = STATE_EXPLODE;
++        visibleMask = 0x1FF;
++        flags &= ~ITEM_FLAG_COLLISION;
++        trapExplosion(room, pos + _vec3i(0, -512, 0));
++        soundPlay(SND_EXPLOSION, &pos);
++
++        ItemObj* enemy = (ItemObj*)extra;
++        if (enemy && (enemy->flags & ITEM_FLAG_STATUS) == ITEM_FLAG_STATUS_INVISIBLE)
++        {
++            enemy->flags &= ~ITEM_FLAG_STATUS;
++            enemy->flags |= ITEM_FLAG_STATUS_ACTIVE;
++            // the model's first animation can have state 0, which no enemy AI handles (seen in
++            // emulation: the mutant stood still for good) - start it standing (state 1, STOP)
++            if (enemy->state == 0)
++            {
++                int32 a = level.models[enemy->type].animIndex;
++                for (int32 i = 0; i < 16; i++)          // its own animations (16 is well within any enemy model)
++                {
++                    if (level.anims[a + i].state == 1) {
++                        enemy->animSet(a + i, true);
++                        break;
++                    }
++                }
++            }
++            enemy->activate();
++        }
++    }
++
++    virtual void update()
++    {
++        if (state != STATE_EXPLODE)
++        {
++            Lara* lara = getLara(pos);
++            vec3i d = lara->pos - pos;
++            if (type == ITEM_MUTANT_EGG_BIG ||
++                (abs(d.x) < TRAP_EGG_RANGE && abs(d.y) < TRAP_EGG_RANGE && abs(d.z) < TRAP_EGG_RANGE))
++            {
++                hatch();
++            }
++        }
++        else if (animIsEnd(0))
++        {
++            deactivate();
++            return;
++        }
++        animProcess();
++    }
++
++    virtual void collide(Lara* lara, CollisionInfo* cinfo)
++    {
++        if (state != STATE_EXPLODE) {
++            collideDefault(lara, cinfo);
++        }
++    }
++
++    virtual uint8* load(uint8* data)
++    {
++        data = ItemObj::load(data);
++        visibleMask = (state == STATE_EXPLODE) ? 0x1FF : 0xFFFE00;
++        if (state == STATE_EXPLODE) {
++            flags &= ~ITEM_FLAG_COLLISION;
++        }
++        return data;
++    }
++};
++
++struct CentaurStatue : Object               // Tomb of Tihocan
++{
++    CentaurStatue(Room* room) : Object(room)
++    {
++        ItemObj* centaur = trapSpawn(ITEM_CENTAUR, room, pos, angle.y, ITEM_FLAG_ONCE, intensity);
++        if (centaur) {
++            centaur->animSet(level.models[ITEM_CENTAUR].animIndex + 7, true);   // rearing
++        }
++        extra = (uint8*)centaur;
++        if ((flags & ITEM_FLAG_STATUS) != ITEM_FLAG_STATUS_INVISIBLE) {
++            activate();
++        }
++    }
++
++    virtual void update()
++    {
++        Lara* lara = getLara(pos);
++        vec3i d = lara->pos - pos;
++
++        if (d.y > -1024 && d.y < 1024 && X_SQR(d.x >> 4) + X_SQR(d.z >> 4) < X_SQR(TRAP_STATUE_RANGE >> 4))
++        {
++            trapExplosion(room, pos + _vec3i(0, -768, 0));
++            trapExplosion(room, pos + _vec3i(0, -256, 0));
++            soundPlay(SND_EXPLOSION, &pos);
++
++            flags &= ~ITEM_FLAG_STATUS;
++            flags |= ITEM_FLAG_STATUS_INVISIBLE;
++            deactivate();
++
++            ItemObj* centaur = (ItemObj*)extra;
++            if (centaur && (centaur->flags & ITEM_FLAG_STATUS) == ITEM_FLAG_STATUS_INVISIBLE)
++            {
++                centaur->flags &= ~ITEM_FLAG_STATUS;
++                centaur->flags |= ITEM_FLAG_STATUS_ACTIVE;
++                centaur->activate();
++            }
++        }
++    }
++
++    virtual void collide(Lara* lara, CollisionInfo* cinfo)
++    {
++        collideDefault(lara, cinfo);
++    }
++};
++
++
++// ------------------------------------------------------------------------- the Scion
++struct ScionHolder : Object
++{
++    ScionHolder(Room* room) : Object(room) {}
++
++    virtual void update() {}
++
++    virtual void collide(Lara* lara, CollisionInfo* cinfo)
++    {
++        collideDefault(lara, cinfo);
++    }
++};
++
++struct ScionTarget : Object                 // Atlantis: shoot the Scion
++{
++    // hSpeed: frames since it was destroyed
++    ScionTarget(Room* room) : Object(room)
++    {
++        health = 5;
++        hSpeed = 0;
++        if ((flags & ITEM_FLAG_STATUS) != ITEM_FLAG_STATUS_INVISIBLE)
++        {
++            flags &= ~ITEM_FLAG_STATUS;
++            flags |= ITEM_FLAG_STATUS_ACTIVE;
++            activate();
++        }
++    }
++
++    virtual void hit(int32 damage, const vec3i &point, int32 soundId)
++    {
++        if (health > 0) {
++            health -= damage;
++        }
++    }
++
++    virtual void update()
++    {
++        if (health > 0)
++        {
++            hSpeed = 0;
++            animProcess();
++            return;
++        }
++
++        if (hSpeed == 0)
++        {
++            flags &= ~ITEM_FLAG_STATUS;
++            flags |= ITEM_FLAG_STATUS_INVISIBLE;
++            updateRoom();
++            checkTrigger(gLastFloorData, NULL);     // the level's end is under it
++        }
++
++        if (hSpeed % 10 == 0)
++        {
++            vec3i p = pos;
++            p.x += (rand_logic() - 0x4000) >> 6;
++            p.y -= 256 + (rand_logic() >> 6);
++            p.z += (rand_logic() - 0x4000) >> 6;
++            trapExplosion(room, p);
++            soundPlay(SND_EXPLOSION, &pos);
++            gCameraBounce = -200;
++        }
++
++        if (++hSpeed >= 3 * 30) {
++            deactivate();
++        }
++    }
++
++    virtual void collide(Lara* lara, CollisionInfo* cinfo)
++    {
++        if ((flags & ITEM_FLAG_STATUS) != ITEM_FLAG_STATUS_INVISIBLE) {
++            collideDefault(lara, cinfo);
++        }
++    }
++};
++
++// ------------------------------------------------------------------------- projectiles
++struct Missile : ItemObj                    // mutant shards, centaur bombs, Natla's bolts
++{
++    // health: the damage, timer: frames left, hSpeed / vSpeed: set by Enemy::fire
++    Missile(Room* room) : ItemObj(room)
++    {
++        flags &= ~ITEM_FLAG_COLLISION;
++        timer = 4 * 30;
++        activate();
++    }
++
++    void impact(bool hitLara)
++    {
++        if (type == ITEM_CENTAUR_BULLET)
++        {
++            trapExplosion(room, pos);
++            soundPlay(SND_EXPLOSION, &pos);
++        }
++        else if (!hitLara)
++        {
++            fxRicochet(room, pos, true);
++        }
++        remove();
++    }
++
++    virtual void update()
++    {
++        int32 s, c;
++        sincos(angle.y, s, c);
++        pos.x += hSpeed * s >> FIXED_SHIFT;
++        pos.z += hSpeed * c >> FIXED_SHIFT;
++        pos.y += vSpeed;
++
++        Room* r = room->getRoom(pos.x, pos.y, pos.z);
++        if (r != room)
++        {
++            room->remove(this);
++            r->add(this);
++        }
++
++        const Sector* sector = room->getSector(pos.x, pos.z);
++        if (--timer <= 0 ||
++            pos.y >= sector->getFloor(pos.x, pos.y, pos.z) ||
++            pos.y <= sector->getCeiling(pos.x, pos.y, pos.z))
++        {
++            impact(false);
++            return;
++        }
++
++        Lara* lara = getLara(pos);
++        if (lara->health > 0)
++        {
++            int32 dx = lara->pos.x - pos.x;
++            int32 dy = (lara->pos.y - 512) - pos.y;
++            int32 dz = lara->pos.z - pos.z;
++            if (abs(dx) < 200 && abs(dz) < 200 && abs(dy) < 512)
++            {
++                lara->hit(health, pos, 0);
++                lara->fxBlood(pos, angle.y, 0);
++                impact(true);
++            }
++        }
++    }
++};
++
++
++// ------------------------------------------------------------------------- lava fountains
++#define LAVA_PARTICLES_MAX  8
++
++int32 gLavaParticles;
++
++struct LavaParticle : ItemObj               // Natla's Mines, Atlantis, The Great Pyramid
++{
++    LavaParticle(Room* room) : ItemObj(room)
++    {
++        flags &= ~ITEM_FLAG_COLLISION;
++        int32 frames = -level.models[type].count;
++        frameIndex = (frames > 0) ? (rand_draw() % frames) : 0;
++        angle.y = int16(rand_logic() << 1);
++        hSpeed = int16(rand_logic() >> 10);
++        vSpeed = int16(-(rand_logic() / 200));
++        gLavaParticles++;
++        activate();
++    }
++
++    void kill()
++    {
++        gLavaParticles--;
++        remove();
++    }
++
++    virtual void update()
++    {
++        int32 s, c;
++        sincos(angle.y, s, c);
++        pos.x += hSpeed * s >> FIXED_SHIFT;
++        pos.z += hSpeed * c >> FIXED_SHIFT;
++        vSpeed += GRAVITY;
++        pos.y += vSpeed;
++
++        Room* r = room->getRoom(pos.x, pos.y, pos.z);
++        if (r != room)
++        {
++            room->remove(this);
++            r->add(this);
++        }
++
++        const Sector* sector = room->getSector(pos.x, pos.z);
++        if (pos.y >= sector->getFloor(pos.x, pos.y, pos.z) || pos.y < sector->getCeiling(pos.x, pos.y, pos.z))
++        {
++            kill();
++            return;
++        }
++
++        Lara* lara = getLara(pos);
++        if (lara->health > 0)
++        {
++            int32 dx = lara->pos.x - pos.x;
++            int32 dy = (lara->pos.y - 384) - pos.y;
++            int32 dz = lara->pos.z - pos.z;
++            if (abs(dx) < 200 && abs(dz) < 200 && abs(dy) < 512)
++            {
++                lara->hit(10, pos, 0);
++                kill();
++            }
++        }
++    }
++};
++
++struct LavaFountain : Object
++{
++    LavaFountain(Room* room) : Object(room)
++    {
++        flags &= ~ITEM_FLAG_COLLISION;
++    }
++
++    virtual void update()
++    {
++        if (!isActive() || level.models[ITEM_LAVA_PARTICLE].count >= 0)
++            return;
++
++        Lara* lara = getLara(pos);
++        vec3i d = lara->pos - pos;
++        if (abs(d.x) > 10 * 1024 || abs(d.z) > 10 * 1024 || abs(d.y) > 6 * 1024)
++            return;                         // out of sight: no items spent on it
++
++        soundPlay(SND_LAVA, &pos);
++
++        if (gLavaParticles < LAVA_PARTICLES_MAX && rand_logic() < 0x4000) {
++            trapSpawn(ITEM_LAVA_PARTICLE, room, pos, 0, 0, 255);
++        }
++    }
++
++    virtual void draw() {}
++};
++
++#endif
+diff -ruN a/src/platform/32x/main.cpp b/src/platform/32x/main.cpp
+--- a/src/platform/32x/main.cpp	2026-10-22 00:04:52.357625795 -0700
++++ b/src/platform/32x/main.cpp	2026-10-22 00:04:52.455068229 -0700
+@@ -383,7 +383,7 @@
+ #define CS_BASE         0x22000000          /* cart, cache-through, as the SH2 sees it */
+ #define CS_SET          0x3F0000
+ #define CS_GAME         0x3F0400
+-#define CS_GAME_MAX     0xF000
++#define CS_GAME_MAX     0x2400              /* the save (at most 8 KB) stays in pieces 0-2 */
+ #define CS_EVEN(x)      (((x) + 1) & ~1)
+ 
+ 
+@@ -468,8 +468,20 @@
+     return cartWrite(ofs, b, 4);
+ }
+ 
++/* SETTINGS-1: the options save on every change (each switch press) - and a save is 2048
++   commands to the Sub-CPU, so the menu stalled for a moment after each press and the next
++   press could be lost (or toggle the value back).  Now a change only marks the settings;
++   they are written once the inventory has closed (main loop). */
++static bool gSettingsDirty = false;
++
+ bool osSaveSettings()
+ {
++    gSettingsDirty = true;
++    return true;
++}
++
++static bool settingsWrite()
++{
+     cartWrite32(CS_SET, 0);                                     /* invalid while writing */
+     if (!cartWrite32(CS_SET + 4, sizeof(gSettings))) return false;
+     if (!cartWrite(CS_SET + 8, (const uint8*)&gSettings, sizeof(gSettings))) return false;
+@@ -608,7 +620,8 @@
+  *   return to the menu.  It now has its own place in the cart, 0.5 MB (cart 0x080000 - the
+  *   unused space between the game and the level slot at 2 MB), and stays there:
+  *   - it is loaded from the CD once; afterwards a record in the cart's save area says so:
+- *     0x3F0300  'OLCV', file length, checksum, ~checksum   (written LAST, after a full copy)
++ *     0x3FE000  'OLCV', file length, checksum, ~checksum   (written LAST, after a full copy;
++ *               SAVE-2: piece 14 of the save area, was 0x3F0300 in piece 0 with the settings)
+  *   - the cart keeps its contents without power, so at the next start the game checks the
+  *     record: same length as Caves on this disc + the checksum of what is in the cart now
+  *     matches -> no loading at all.  Anything else (first start, wiped cart, half-finished
+@@ -620,16 +633,40 @@
+  * --------------------------------------------------------------------------------------- */
+ #define CD_FILE_CAVES_BASE    200                  /* subcpu/main.c: 200 + LevelID -> cart 0x080000 */
+ #define CD_CAVES_CART         0x02080000           /* cart 0x080000 as the SH2 sees it */
+-#define CS_CAVES              0x3F0300             /* record: after the settings, before the save */
++#define CS_CAVES              0x3FE000             /* SAVE-2: record in save piece 14 (was 0x3F0300) */
+ #define CAVES_MARK            0x4F4C4356           /* 'OLCV' */
+ 
+ static int32 gSfxLevel = -1;                       /* CAVES-1: whose sound effects are loaded */
+ static bool  gCavesOk = false;                     /* CAVES-1: Caves checked/loaded this session */
+ 
++/* SFX-4: a level whose file carries a sound bank (SFX-2) plays every effect through the 32X PWM,
++   so its Sega CD PCM pack is not needed: no CMD 53 (a file open + read), and the CD music is not
++   stopped for it.  The same checks as sfxBankStart, on the level as it is in the cart. */
++bool gPcmPackOk = true;                            /* SFX-4: false = no PCM pack for this level */
++static bool sfxLevelHasBank(int32 id)
++{
++    const uint8* lvl = (const uint8*)((id == LVL_TR1_1 ? CD_CAVES_CART : CD_LEVEL_CART) | 0x20000000);
++    uint32 d = *(volatile const uint32*)(lvl + 164);           /* header: soundData (file offset) */
++    if (d == 0 || (d & 3) || d >= 0x1F0000)
++        return false;
++    if (*(volatile const uint32*)(lvl + d) != 0x53465842)      /* 'SFXB' */
++        return false;
++    uint32 rn = *(volatile const uint32*)(lvl + d + 4);
++    int32 rate = int32(rn >> 16);
++    return rate >= 4000 && rate <= 11025 && (rn & 0xFFFF) == *(volatile const uint16*)(lvl + 30);
++}
++
+ static void sfxLoad(int32 id)                      /* the level's sound effects, if not there */
+ {
+     if (gSfxLevel == id)
+         return;
++    if (sfxLevelHasBank(id))                       /* SFX-4: the PWM plays them all */
++    {
++        gSfxLevel = id;
++        gPcmPackOk = false;                        /* the chip still holds another level's pack */
++        return;
++    }
++    gPcmPackOk = true;
+     MARS_SYS_COMM2 = 0;                            /* music off - no CD reads while it plays */
+     cdCmd(54);
+     MARS_SYS_COMM2 = (uint16)id;                   /* OL-6 */
+@@ -684,13 +721,33 @@
+  * RESUME-1: the level slot (cart 2 MB) keeps its level without power too, so the first level
+  *   after power-on (Current Position, or a level from the passport) is not loaded from the CD
+  *   again when it is already there.  Same rules as Caves:
+- *     0x3F0310  'OLLV', level, file length, checksum, ~checksum   (written after a full load)
++ *     0x3FE010  'OLLV', level, file length, checksum, ~checksum   (written after a full load;
++ *               SAVE-2: piece 14, was 0x3F0310)
+  *   - checked once per power-on (gCartLevel -2): same level, same length as the file on this
+  *     disc, checksum of what is in the cart now matches -> no loading.  Anything else (a
+  *     movie or the cart test's load test used the slot, a half-finished load) -> the CD.
+  *   - A + B + C held: always load from the CD.
+  * --------------------------------------------------------------------------------------- */
+-#define CS_SLOT               0x3F0310             /* record: after Caves', before the save */
++#define CS_SLOT               0x3FE010             /* SAVE-2: record in save piece 14 (was 0x3F0310) */
++/* SAVE-2: the two records used to share piece 0 with the settings and the saved game, so every
++   level load rewrote that whole piece - a power cut during it could take the saved game with it.
++   Now each load rewrites only piece 14 (free in ledger section 5).  The old records in piece 0
++   are no longer read: the first start with this build loads Caves and the level from the CD
++   once.  A failed record write (csEnd) is tried once more; if it still fails the record stays
++   invalid and the next start simply loads from the CD. */
++static void recordWrite(uint32 at, const uint32* v, int32 n, uint32 mark)
++{
++    for (int32 tries = 0; tries < 2; tries++)
++    {
++        cartWrite32(at, 0);                        /* invalid while writing */
++        for (int32 i = 0; i < n; i++)
++            cartWrite32(at + 4 + i * 4, v[i]);
++        cartWrite32(at, mark);                     /* marker last */
++        if (csEnd())
++            return;
++        CD_STATE(0x4EF0);                          /* SAVE-2: the record write failed */
++    }
++}
+ #define SLOT_MARK             0x4F4C4C56           /* 'OLLV' */
+ 
+ static uint32 slotSum(int32 len)                   /* checksum of the level slot's contents */
+@@ -730,13 +787,8 @@
+ static void slotRecord(int32 id, int32 len)        /* the slot now holds level id, complete */
+ {
+     uint32 sum = slotSum(len);                     /* caches already cleared by the caller */
+-    cartWrite32(CS_SLOT, 0);
+-    cartWrite32(CS_SLOT + 4, (uint32)id);
+-    cartWrite32(CS_SLOT + 8, (uint32)len);
+-    cartWrite32(CS_SLOT + 12, sum);
+-    cartWrite32(CS_SLOT + 16, ~sum);
+-    cartWrite32(CS_SLOT, SLOT_MARK);               /* marker last */
+-    csEnd();
++    const uint32 v[4] = { (uint32)id, (uint32)len, sum, ~sum };
++    recordWrite(CS_SLOT, v, 4, SLOT_MARK);         /* SAVE-2 */
+     CacheClear();
+ }
+ 
+@@ -764,12 +816,8 @@
+             MARS_WAIT();
+ 
+             uint32 sum = cavesSum(res);            /* the record, marker written last */
+-            cartWrite32(CS_CAVES, 0);
+-            cartWrite32(CS_CAVES + 4, (uint32)res);
+-            cartWrite32(CS_CAVES + 8, sum);
+-            cartWrite32(CS_CAVES + 12, ~sum);
+-            cartWrite32(CS_CAVES, CAVES_MARK);
+-            csEnd();
++            const uint32 v[3] = { (uint32)res, sum, ~sum };
++            recordWrite(CS_CAVES, v, 3, CAVES_MARK);   /* SAVE-2 */
+             CacheClear();
+ 
+             gSfxLevel = -1;                        /* load the sound effects below */
+@@ -1093,6 +1141,16 @@
+     while (1)
+     {
+         int32 frame = *(volatile int32 *)&gFrameIndex;
++#ifdef CD32X
++        /* SETTINGS-1: when the inventory is closed, or on the title when its ring is idle (the
++           title's inventory never closes: a change there must not wait for a level) */
++        if (gSettingsDirty && (inventory.state == INV_STATE_NONE ||
++            (inventory.page == INV_PAGE_TITLE && inventory.state == INV_STATE_READY)))
++        {
++            gSettingsDirty = false;
++            settingsWrite();
++        }
++#endif
+ 
+         if (frame - fpsFrame >= vsyncRate)
+         {
+diff -ruN a/src/platform/32x/render.cpp b/src/platform/32x/render.cpp
+--- a/src/platform/32x/render.cpp	2026-10-22 00:04:52.345927729 -0700
++++ b/src/platform/32x/render.cpp	2026-10-22 00:04:52.352043615 -0700
+@@ -1522,6 +1522,14 @@
+         return;
+     }
+ 
++    // OBJECTS-1: the face list too (gVertices follows gFaces in SDRAM - an overflow would
++    // overwrite vertices); a room that doesn't fit is left out, as renderMesh does
++    if ((gFacesBase - gFaces) + room->info->quadsCount + room->info->trianglesCount + room->info->spritesCount > MAX_FACES)
++    {
++        ASSERT(false);
++        return;
++    }
++
+     {
+         PROFILE(CNT_TRANSFORM);
+         if (ROOM_FLAG_WATER(room->info->flags)) {
+diff -ruN a/src/platform/32x/sound.cpp b/src/platform/32x/sound.cpp
+--- a/src/platform/32x/sound.cpp	2026-10-22 00:04:52.376411650 -0700
++++ b/src/platform/32x/sound.cpp	2026-10-22 00:04:52.381771610 -0700
+@@ -37,6 +37,7 @@
+ bool sfxPlay(int32 index, int32 volume, int32 pitch, int32 mode);
+ void sfxStopSample(int32 index);
+ void sfxStopAll();
++extern bool gPcmPackOk;                         /* SFX-4: main.cpp */
+ void sndInitSamples() { sfxBankStart(); }      /* SFX-2: a new level is loaded */
+ void sndFreeSamples() { sfxBankStop(); }       /* SFX-2: before the level load */
+ /* OL-6: the sound effects of a frame go to the Sub-CPU with the pad request; the number is
+@@ -55,6 +56,8 @@
+         return NULL;
+     if (sfxPlay(index, volume, pitch, mode))    /* SFX-2: through the PWM */
+         return NULL;
++    if (!gPcmPackOk)                            /* SFX-4: this level has no PCM pack loaded */
++        return NULL;
+     int32 id = index + 1;
+     int32 quiet = 0;
+     for (int32 i = 0; i < sndPendingCount; i++)

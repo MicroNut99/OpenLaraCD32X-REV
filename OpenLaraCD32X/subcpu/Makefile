@@ -22,6 +22,10 @@ ifdef CART
 CCFLAGS += -DOL_CART_MB=$(CART)
 HWFLAGS += -DOL_CART_MB=$(CART)
 endif
+# STREAM-1: the drive read-ahead for CMD 46 / 47 (main.c, OL_STREAM).  Default on; make cd STREAM=0
+# (or STREAM=0 bash build.sh) builds main.c exactly as before.
+STREAM ?= 1
+HWFLAGS += -DOL_STREAM=$(STREAM)
 LDFLAGS = -T $(LDSCRIPTSDIR)/cd.ld -Wl,-Map=output.map -nostdlib
 ASFLAGS = -m68000 --register-prefix-optional
 

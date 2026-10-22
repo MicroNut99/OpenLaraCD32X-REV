@@ -135,7 +135,7 @@ diff -ruN a/src/platform/32x/main.cpp b/src/platform/32x/main.cpp
  #if defined(CD32X) && defined(CD32X_CART_MB)
 diff -ruN a/src/platform/32x/sfx.inc b/src/platform/32x/sfx.inc
 --- a/src/platform/32x/sfx.inc	1969-12-31 16:00:00.000000000 -0800
-+++ b/src/platform/32x/sfx.inc	2026-10-21 20:40:52.633927350 -0700
++++ b/src/platform/32x/sfx.inc	2026-10-21 21:00:17.760507333 -0700
 @@ -0,0 +1,326 @@
 +/* ---------------------------------------------------------------------------------------
 + * SFX-2: every sound effect of the level through the 32X PWM (included by main.cpp after
@@ -167,8 +167,8 @@ diff -ruN a/src/platform/32x/sfx.inc b/src/platform/32x/sfx.inc
 +#define MARS_CMD_SFX_STOP   0x7A5F              /* slave: DMA off, the PWM stays at silence */
 +#define SFX_CHANNELS        8
 +#define SFX_QUEUE           32
-+#define SFX_GAIN            7                   /* SFX-3: volume, x/16 of the mix (was 2/16: too faint on
-+                                                   the console); a sound at full volume: +-444 of +-478 */
++#define SFX_GAIN            2                   /* SFX-3: volume, x/16 of the mix (2: as tested on the
++                                                   console, 21 Oct 2026); full volume: +-127 of +-478 */
 +#define SFX_SHARED(v)       (*(volatile __typeof__(v) *)((uint32)&(v) | 0x20000000))
 +#define SFX_THROUGH(p)      ((const uint8*)((uint32)(p) | 0x20000000))
 +#define SFX_OP_PLAY         1u

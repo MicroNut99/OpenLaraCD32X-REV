@@ -58,13 +58,36 @@ The engine file is 258048 bytes (2 KB more than v1.4).
 
 ## RESUME-1: the level stays in the cart after power-off
 The level slot (cart 2 MB) is battery-backed like the save, so the last level is still there at
-the next power-on. After every level load a record goes into the save area: `0x3F0310`
+the next power-on. After every level load a record goes into the save area: `0x3FE010` (SAVE-2; was `0x3F0310`)
 'OLLV', level, file length, checksum, ~checksum (marker last). The first level after power-on
 (Current Position, or a level from the passport) checks it: same level, same length as on this
 disc, checksum of the cart matches → **no CD load** (ares: Lost Valley 28 s → 3 s, the checksum).
 Otherwise (a movie or the cart test's load test used the slot, a half-finished load) it loads
 from the CD as before. A+B+C held = always from the CD. Same rules as CAVES-1's Caves record.
 Not switched by `OPT`: `OPT=0` builds v1.4's loops with RESUME-1.
+
+## SAVE-2: the load records out of the settings piece
+The Caves and level slot records moved from `0x3F0300` / `0x3F0310` (save piece 0, with the
+settings and the saved game) to `0x3FE000` / `0x3FE010` (piece 14, free in the command ledger's
+save table). Every level load rewrites one 4 KB piece; before, that was the piece holding the
+settings and the saved game, so a power cut at that moment could take them with it. A record
+write that fails is tried once more (it used to be ignored); if it fails again the record stays
+invalid and the next start loads from the CD. The first start with this build ignores the old
+records: Caves and the level load from the CD once.
+
+## STREAM-1: the drive reads ahead while a level loads (Sub-CPU)
+The Sub-CPU used to stop the drive and seek again for every 32 KB chunk of a level (command 46).
+Now the drive reads on to the end of the file: each sector's header is checked, and sectors that
+arrive while the 68000 copies a chunk to the cart are kept in a 64 KB ring (the start of the next
+chunk). A missed sector starts the read again at the sector wanted; anything else that uses the
+drive (opening a file, the PCM pack, the CD audio) stops the stream first. The same code as
+OpenJazz CD32X R7 and Hurrican CD32X P2b.
+- Behind a switch, on by default: `STREAM=0 bash build.sh` builds the Sub-CPU exactly as before.
+- No new command, nothing changes for the SH2. `hw_md.s`, `scd.c`, the boot block, CDLOADER,
+  `crt0.s` and `src-md/` are unchanged (the two BIOS stream calls are inline assembly in
+  `subcpu/main.c`). Command ledger section 10.
+- Compile-checked with both settings; **not yet run** in emulation or on the console. If a level
+  load hangs or shows a load error, build with `STREAM=0` and tell me.
 
 ## Benchmark build
 `make CD32X=1 BENCH=1`: starts straight in Caves, one game-logic step per drawn frame, a scripted

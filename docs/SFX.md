@@ -24,9 +24,12 @@ effect of each frame was sent to the Sega CD.
   - The slave runs at interrupt level 3 instead of 13. Only the DMA interrupt (priority 4) gets
     through: the slave's 32X interrupts stay off.
 - **Movies:** the mixer stops while a movie plays, and starts again afterwards.
-- **Volume (SFX-3):** `SFX_GAIN` in `sfx.inc`, out of 16. The first build used 2, which was too
-  faint on the console; it is now 7, about 3.5 times louder. A sound at full volume reaches ±444 of the
-  PWM's ±478; several loud sounds together are clipped. To change it, edit this one number.
+- **Volume:** `SFX_GAIN` in `sfx.inc`, out of 16. It is **2** (the same level as the first build),
+  tested right on the console on 21 Oct 2026. A try with 7 was too loud and is undone. To change it,
+  edit this one number (full volume of one sound: ±127 of the PWM's ±478 at 2).
+- **SFX-4:** a level with a bank no longer loads its Sega CD PCM pack (no command 53: one file open
+  and read less per level, and the CD music is not stopped for it). The PCM path stays for levels
+  without a bank.
 
 ## SFX-1: the Sega CD PCM path (the fallback)
 - Up to **3 effects per frame**, the loudest first.
@@ -53,10 +56,7 @@ Checked:
 - a movie with the mixer on, and the effects back after it;
 - the PCM fallback with the new packs.
 
-**Not yet on the console.** Things to listen for there:
-- clicks when a level or a movie starts;
-- the volume against the CD music;
-- crackle in busy scenes.
+**On the console (21 Oct 2026):** good, volume right at `SFX_GAIN` 2.
 
 ## Build
 `bash build.sh` (or `CART=16 bash build.sh`). The new step `==> sound banks` lists each level's
@@ -69,3 +69,10 @@ nothing in this port.
 - **On:** the level's music starts again.
 - **This covers all CD audio**, including the cut-scenes' voices, which are CD tracks too.
 - Sound FX switches the effects, on both the PWM and the PCM path.
+
+## SETTINGS-1: the switches respond at once
+The Music and Sound FX switches did change the sound, but every change also saved the settings to the
+cart at once: 2048 + 1 commands to the Sega CD, the menu frozen for a moment, and the next presses
+were lost or counted twice, so the switches seemed not to work. Now a change only marks the
+settings; they are written once, when the inventory closes. The switch takes effect at once as
+before.

@@ -6,6 +6,7 @@
 #   CART=8 bash build.sh     the 8 MB cart test    -> subcpu/CDROMPlayer_cart8_music.cue
 #   CART=16 bash build.sh    the 16 MB cart test   -> subcpu/CDROMPlayer_cart16_music.cue
 # They start with the cart test screen, then the game.  Without CART: unchanged.
+# STREAM=0 bash build.sh: the Sub-CPU without the drive read-ahead (STREAM-1, on by default)
 set -e
 HERE="$(cd "$(dirname "$0")" && pwd)"
 CART="${CART:-}"
@@ -41,6 +42,10 @@ if [ ! -f "$ENGINE/sfx.inc" ]; then
   echo "==> applying engine/openlara-sfx.patch to OpenLara-src (SFX-1/2: all sound effects)"
   git -C "$ENGINE/../../.." apply "$HERE/../engine/openlara-sfx.patch"
 fi
+if [ ! -f "$ENGINE/../../fixed/traps.h" ]; then
+  echo "==> applying engine/openlara-objects.patch to OpenLara-src (OBJECTS-1: traps and objects)"
+  git -C "$ENGINE/../../.." apply "$HERE/../engine/openlara-objects.patch"
+fi
 if [ -n "$CART" ]; then echo "==> CART TEST BUILD: ${CART} MB"; fi
 
 echo "==> splash";    python3 "$HERE/tools/make_ol_splash.py" "$HERE/splash.jpg" "$ENGINE/data/SPLASH.BIN"
@@ -56,7 +61,7 @@ for f in "$HERE"/fmv/*.ROQ; do
   if [ -f "$f" ] && [ "$(stat -c %s "$f")" -le 2031616 ]; then cp "$f" "$HERE/subcpu/ROMS/"; echo "    $(basename "$f")"; fi
 done
 echo "==> SH2 loader";  cd "$HERE/sh2"    && make -f Makefile.cdloader clean && make -f Makefile.cdloader
-echo "==> Sub-CPU";     cd "$HERE/subcpu" && make clean && make cd ${CART:+CART=$CART}
+echo "==> Sub-CPU";     cd "$HERE/subcpu" && make clean && make cd ${CART:+CART=$CART} ${STREAM:+STREAM=$STREAM}
 
 ISO="$HERE/subcpu/CDROMPlayer.iso"
 [ -f "$ISO" ] || { echo "*** $ISO was not made - stopping"; exit 1; }

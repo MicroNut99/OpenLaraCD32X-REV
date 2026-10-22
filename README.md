@@ -1,6 +1,6 @@
 # Tomb Raider for Sega CD + 32X (OpenLara CD32X)
 
-Tomb Raider (1996) on the **Sega CD32X**, built on XProger's **OpenLara** 32X engine. **Version 1.4.**
+Tomb Raider (1996) on the **Sega CD32X**, built on XProger's **OpenLara** 32X engine. **Version 1.5** (release notes: `docs/OPENLARA_CD32X_RELEASE.md`).
 The whole game runs from one CD: each level is loaded from the disc into a 4 MB RAM cart, with
 CD music, PCM sound effects, saving, the cut-scenes with their voices and the game's movies.
 
@@ -71,6 +71,14 @@ Faster texture span loops (5-9% less frame time in ares, pictures bit-identical 
 the last level is not loaded from the CD again after a power cycle when it is still in the
 cart (Current Position starts in seconds). Both are in every build. See `docs/OPT.md`.
 
+## Traps, objects, sound and loading (v1.5)
+- **Every TR1 trap and moving object** (OBJECTS-1): rolling balls, spikes, teeth traps, falling
+  ceilings, Damocles swords, Thor's hammer, the cabin and the boat, mutant eggs, the Scion, fire and
+  lava, flipmaps, visible projectiles. See `docs/OBJECTS.md`.
+- **All sound effects** through the 32X PWM, and the Music switch works (`docs/SFX.md`).
+- **Faster level loads**: the Sub-CPU keeps the drive reading (STREAM-1, `STREAM=0` to turn off);
+  the load records no longer share the save's piece of the cart (SAVE-2). See `docs/OPT.md`.
+
 ## Controls (6-button pad)
 | Button | Action |
 |---|---|
@@ -138,10 +146,10 @@ Saving is not available in Lara's Home.
 
 ## Known limitations
 - **Gorillas** do not climb ledges; **water rats** do not dive.
-- Enemy darts, bolts and bullets hit instantly (no visible projectile); an enemy may occasionally
+- Human enemies' darts and bullets hit instantly (no visible projectile; the mutants', centaurs'
+  and Natla's shots fly since v1.5); an enemy may occasionally
   shoot through a thin wall.
-- Sound effects: one per frame, the 31 most important per level. **Animals and creatures make no
-  sound yet** – rats, Lara's double and others (next on the list).
+- Sound effects: all of them since v1.5 (the PWM mixer, up to 8 at once).
 - The original game's short story cues are not played (not on the album).
 - Cut-scene sound can start a moment late (the CD drive seeks to the track).
 - Movies: only 4 of the 11 (the ones that fit the RAM cart), from the title menu only, not yet
@@ -272,6 +280,7 @@ The version is in the file `VERSION` and is shown small in the corner of the loa
 | 1.0 | The whole game from CD: all levels, CD music, PCM sound effects, saving in the RAM cart, all enemies, full passport, loading screen. |
 | 1.1 | Faster: the two SH2s draw separate halves of the screen, game logic runs while the second SH2 is still drawing, and the next frame is prepared without waiting for the screen refresh (fights 7–8 → 9–10 fps, exploring 9–15 fps). Profiler build (`PROF=1`). Version shown on the loading picture. |
 | 1.2 | Fast start: Caves (the title menu) stays in the RAM cart and is not loaded again – hold A+B+C at start to reload it. |
+| 1.5 | Every TR1 trap and moving object, flipmaps, visible projectiles; all sound effects through the PWM and the Music switch; faster span loops (OPT-1/2); the last level resumes from the cart after power-off (RESUME-1); the drive reads ahead while loading (STREAM-1); settings and save area fixes; 8/16 MB cart test builds. |
 | 1.4 | Faster (fights 9–10 → 10–13 fps, exploring 10–16 fps): pauses in the wait loops so the two SH2s don't block each other on the bus, screen clear by the 32X VDP, the per-polygon drawing code in SDRAM, the SH2's divider for cut polygons. |
 | 1.3 | Cut-scenes in the passport, with their voices from the game CD (and fixed: shorter cut-scenes ended at once, a cut-scene could jump to the next level instead of the menu). The game's movies: RoQ player with PWM sound, four movies in the passport. Lara's double, sound effects quieter with distance. |
 
