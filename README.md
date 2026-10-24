@@ -261,8 +261,8 @@ The version is in the file `VERSION` and is shown small in the corner of the loa
 | 1.0 | The whole game from CD: all levels, CD music, PCM sound effects, saving in the RAM cart, all enemies, full passport, loading screen. |
 | 1.1 | Faster: the two SH2s draw separate halves of the screen, game logic runs while the second SH2 is still drawing, and the next frame is prepared without waiting for the screen refresh (fights 7–8 → 9–10 fps, exploring 9–15 fps). Profiler build (`PROF=1`). Version shown on the loading picture. |
 | 1.2 | Fast start: Caves (the title menu) stays in the RAM cart and is not loaded again – hold A+B+C at start to reload it. |
-| 1.4 | Faster (fights 9–10 → 10–13 fps, exploring 10–16 fps): pauses in the wait loops so the two SH2s don't block each other on the bus, screen clear by the 32X VDP, the per-polygon drawing code in SDRAM, the SH2's divider for cut polygons. |
-| 1.3 | Cut-scenes in the passport, with their voices from the game CD (and fixed: shorter cut-scenes ended at once, a cut-scene could jump to the next level instead of the menu). The game's movies: RoQ player with PWM sound, four movies in the passport. Lara's double, sound effects quieter with distance. |
+| 1.3 | Faster (fights 9–10 → 10–13 fps, exploring 10–16 fps): pauses in the wait loops so the two SH2s don't block each other on the bus, screen clear by the 32X VDP, the per-polygon drawing code in SDRAM, the SH2's divider for cut polygons. |
+| 1.4 | Cut-scenes in the passport, with their voices from the game CD (and fixed: shorter cut-scenes ended at once, a cut-scene could jump to the next level instead of the menu). The game's movies: RoQ player with PWM sound, four movies in the passport. Lara's double, sound effects quieter with distance. |
 
 ## Credits
 - **OpenLara** – XProger and contributors: https://github.com/XProger/OpenLara
