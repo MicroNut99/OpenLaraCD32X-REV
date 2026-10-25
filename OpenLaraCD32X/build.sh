@@ -6,7 +6,12 @@
 #   CART=8 bash build.sh     the 8 MB cart test    -> subcpu/CDROMPlayer_cart8_music.cue
 #   CART=16 bash build.sh    the 16 MB cart test   -> subcpu/CDROMPlayer_cart16_music.cue
 #   CART=ED bash build.sh    the same test for a Mega EverDrive PRO as the RAM cart (CART-ED)
-#                            -> subcpu/CDROMPlayer_cartED_music.cue; boot it with EDBOOT.BIN (BootCamp)
+#                            -> subcpu/CDROMPlayer_cartED_music.cue; with EDCD=1 below
+#   EDCD=1 bash build.sh     also subcpu/EDCD.32X: the disc started from the Mega EverDrive PRO, which stays
+#                            (EDCD_X=1: CTRL0 with the EverDrive's X bit; EDCD_W0=<bank>: the game in that bank)
+#                            the cartridge (MODE1-1; the builder is in the CD32X BootCamp: BOOTCAMP=<folder>,
+#                            default ../CD32X-BootCamp; its docs/12).  The disc still boots the normal way.
+#                            For the EverDrive: CART=ED EDCD=1 bash build.sh
 # The test is in the title's options (Detail -> Cart Test), then the game.  Without CART: unchanged.
 # Sub-CPU switches (all on by default):
 #   STREAM=0 bash build.sh   the Sub-CPU without the drive read-ahead (STREAM-1)
@@ -88,7 +93,8 @@ for l in open(sys.argv[1]):
         elif t<96: x|=1<<(t-64)
 print('-DCD32X_TRACKS_LO=0x%08Xu -DCD32X_TRACKS_HI=0x%08Xu -DCD32X_TRACKS_X=0x%08Xu'%(lo,hi,x))" "$HERE/music_map.txt")
 echo "==> engine";      cd "$ENGINE" && rm -rf build && make CD32X=1 ${PROF:+PROF=1} ${CART:+CART=$CART} EXTRA="${EXTRA:-} $TRACKBITS"
-echo "==> ROM prep";    python3 "$HERE/tools/prep_openlara_cd.py" "$ENGINE/OpenLara.32x" "$HERE/subcpu/ROMS/OPENLARA.32X"
+PREP_MODE1=""; if [ "${EDCD:-0}" = 1 ]; then PREP_MODE1="--mode1"; fi   # MODE1-1 (EDCD=1, below)
+echo "==> ROM prep";    python3 "$HERE/tools/prep_openlara_cd.py" $PREP_MODE1 "$ENGINE/OpenLara.32x" "$HERE/subcpu/ROMS/OPENLARA.32X"
 echo "==> levels";      N=$(ls "$HERE"/gba/packer/out32x/*.PKD 2>/dev/null | wc -l); [ "$N" -ge 21 ] || { echo "*** only $N levels in gba/packer/out32x (21 expected) - stopping"; exit 1; }; cp "$HERE"/gba/packer/out32x/*.PKD "$HERE/subcpu/ROMS/"
 # SFX-2: every level's sound effects appended to its .PKD for the 32X PWM mixer (SFX=pcm: not)
 if [ "${SFX:-}" != "pcm" ]; then echo "==> sound banks"; python3 "$HERE/tools/sfx_bank.py" "$HERE/gba/packer/out32x" "$HERE/subcpu/ROMS"; fi
@@ -123,6 +129,24 @@ echo "==> disc checked: OpenLara loader + OpenLara ROM"
 echo "==> CD audio";  python3 "$HERE/tools/make_music_tracks.py" "$HERE/music_map.txt" "$HERE/soundtrack_wav" "$HERE/soundtrack_cd"
 cd "$HERE/subcpu" && python3 make_mixed_cd2.py CDROMPlayer.iso $(ls "$HERE"/soundtrack_cd/Track*.wav | sort) --out "CDROMPlayer${CART:+_cart$CART}_music"
 echo "==> BURN THIS: $HERE/subcpu/CDROMPlayer${CART:+_cart$CART}_music.cue  (data + music)"
-if [ "$CART" = "ED" ]; then echo "==> this is the EverDrive PRO CART TEST disc: start EDBOOT.BIN from the EverDrive menu with it in the Sega CD; the test is in Options -> Detail -> Cart Test";
+if [ "$CART" = "ED" ]; then echo "==> this is the EverDrive PRO CART TEST disc: start EDCD.32X (EDCD=1) from the EverDrive menu with it in the Sega CD; the test is in Options -> Detail -> Cart Test";
 elif [ -n "$CART" ]; then echo "==> this is the ${CART} MB CART TEST disc: the test is in Options -> Detail -> Cart Test"; fi
 echo "==> done (the .iso alone has no music - burn the _music.cue above)"
+
+# EDCD=1 (MODE1-1): EDCD.32X, made by the CD32X BootCamp's edboot/build_edcd.sh around this disc's Sub-CPU
+# program built a second time for the cartridge boot (MODE1=1, in a copy of subcpu/: the disc keeps the
+# normal program)
+if [ "${EDCD:-0}" = 1 ]; then
+  BC="${BOOTCAMP:-$HERE/../CD32X-BootCamp}"
+  [ -f "$BC/edboot/build_edcd.sh" ] || { echo "*** EDCD=1 needs the CD32X BootCamp next to this folder (or BOOTCAMP=<folder>): not at $BC"; exit 1; }
+  echo "==> EDCD.32X: the disc started from the EverDrive PRO (cartridge boot)"
+  T=$(mktemp -d); mkdir -p "$T/subcpu/ROMS" "$T/sh2"
+  find "$HERE/subcpu" -maxdepth 1 -type f -exec cp {} "$T/subcpu/" \;
+  cp "$HERE/sh2/CDLOADER.32x" "$T/sh2/"
+  ( cd "$T/subcpu" && make clean > /dev/null && make CDROMPlayer.bin MODE1=1 M1CTRL0=$([ "${EDCD_X:-0}" = 1 ] && echo 0xC000 || echo 0x8000) ${EDCD_W0:+M1W0BANK=$EDCD_W0} ${M1WORDS:+M1WORDS=$M1WORDS} ${CART:+CART=$CART} ${STREAM:+STREAM=$STREAM} ${SLOTS:+SLOTS=$SLOTS} ${FMVRING:+FMVRING=$FMVRING} ${CARTW:+CARTW=$CARTW} ${UB:+UB=$UB} > "$T/mode1.log" 2>&1 ) \
+    || { tail -20 "$T/mode1.log"; echo "*** the MODE1 Sub-CPU program did not build"; exit 1; }
+  bash "$BC/edboot/build_edcd.sh" "$T/subcpu/CDROMPlayer.bin" "$HERE/sh2/CDLOADER.32x" "$HERE/subcpu/EDCD.32X"
+  rm -rf "$T"
+  echo "==> EDCD.32X: $HERE/subcpu/EDCD.32X - copy it to the EverDrive's SD card and start it from the menu"
+  echo "    with the disc above in the Sega CD (not \"Run Mega-CD\")"
+fi

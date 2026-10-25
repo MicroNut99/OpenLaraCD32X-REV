@@ -51,6 +51,26 @@ UB ?= 1
 HWFLAGS += -DOL_UB=$(UB)
 LDFLAGS = -T $(LDSCRIPTSDIR)/cd.ld -Wl,-Map=output.map -nostdlib
 ASFLAGS = -m68000 --register-prefix-optional
+# MODE1-1: make CDROMPlayer.bin MODE1=1 - the listener for a cartridge boot (hw_md.s, OL_MODE1), the
+# program the CD32X BootCamp's EDCD.32X loads into the Sega CD itself.  Without MODE1: unchanged.
+# build.sh EDCD=1 builds it in a copy of this folder; the disc always gets the normal program.
+ifeq ($(MODE1),1)
+ASFLAGS += --defsym OL_MODE1=1
+# MODE1-2: M1WORDS=1 - the cartridge-boot listener writes the cart in words wherever it can
+ifeq ($(M1WORDS),1)
+ASFLAGS += --defsym OL_M1WORDS=1
+endif
+# MODE1-5/6: M1W0BANK=<n> the EverDrive bank window 0 shows (EDCD_W0); M1CTRL0=<v> the launcher's
+# CTRL0 without the write-enable bit (0x8000, or 0xC000 with the X bit): the listener turns W on
+# only inside a copy into the cart (console, 25 Oct 2026: with W on, the 68000's other writes
+# corrupt the cart and the SH2's reads of it)
+ifneq ($(M1W0BANK),)
+ASFLAGS += --defsym OL_M1W0BANK=$(M1W0BANK)
+endif
+ifneq ($(M1CTRL0),)
+ASFLAGS += --defsym OL_M1CTRL0=$(M1CTRL0)
+endif
+endif
 
 PREFIX = $(ROOTDIR)/m68k-elf/bin/m68k-elf-
 CC = $(PREFIX)gcc
