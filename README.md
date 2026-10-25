@@ -11,7 +11,8 @@ CD music, PCM sound effects, saving, the cut-scenes with their voices and the ga
 - Sega Genesis / Mega Drive
 - Sega CD / Mega-CD
 - Sega 32X
-- **A 4MB RAM cart** (battery-backed), in the 32X cartridge slot – required
+- **A 4MB RAM cart** (battery-backed), in the 32X cartridge slot – required (or a Mega EverDrive PRO
+  started with `EDBOOT.BIN`: see *Mega EverDrive PRO as the RAM cart*; not yet tried on the console)
 - a **6-button pad** (recommended; with a 3-button pad Start still opens the inventory, but walk,
   roll and look are missing)
 
@@ -89,6 +90,32 @@ For the 16MB-PCB-CD32X paged SRAM cart: `CART=8 bash build.sh` or `CART=16 bash 
 a test disc (`CDROMPlayer_cart8_music.cue` / `_cart16_`) with a cart page test in the title's
 options (Detail → Cart Test). `bash build.sh` without `CART` is unchanged. See `docs/CART_TEST.md` and
 `docs/SRAM_8MB_16MB_DESIGN.md`.
+
+## Mega EverDrive PRO as the RAM cart (CART=ED)
+A Mega EverDrive PRO can take the RAM cart's place. Its memory, with the write bit on, was tested on the
+console as 16 MB of RAM for the 32X (CD32X BootCamp, `docs/10_EVERDRIVE_TEST.md`). **`EDBOOT.BIN`** (CD32X
+BootCamp, `edboot/`) sets it up as the RAM cart and boots the disc:
+
+1. Genesis + Sega CD + 32X, the EverDrive PRO in the 32X slot, the burned disc in the Sega CD.
+2. Start `EDBOOT.BIN` from the EverDrive menu. The Sega CD logo, then the game: the EverDrive is the RAM cart.
+   (A red screen: the EverDrive did not let go of the cartridge line; blue: no Sega CD.)
+
+Any OpenLara disc runs this way, with the 4 MB cart's layout. **`CART=ED`** makes the test disc for the
+EverDrive's other 12 MB:
+
+```bash
+CART=ED bash build.sh      # -> subcpu/CDROMPlayer_cartED_music.cue
+```
+
+On the title menu: **Graphics** (the sunglasses) → **Cart Test** → A. Window 1 (cart 2–4 MB) is switched to
+the EverDrive's banks 4–27, four at a time (pages 1–6); each page gets its pattern and is read back by the
+SH2. Expected: `FOUND 16MB`, `PAGE 1 B04-07 OK` … `PAGE 6 B24-27 OK`, `SAVE AREA UNCHANGED`; then A loads
+TITLE.PKD into every page. Details: `docs/CART_TEST.md`.
+
+- Only on the EverDrive: the `CART=ED` disc writes the EverDrive's registers, which the 16MB-PCB board reads as
+  its own page register (and the `CART=8` / `CART=16` discs must not run on the EverDrive).
+- The EverDrive's memory is not battery-backed: saves and the kept Caves survive a reset, not a power-off.
+- Banks 28–31 (the EverDrive's save area and its own software) are never used.
 
 ## Speed-ups and resume (OPT-1, OPT-2, RESUME-1)
 Faster texture span loops (5-9% less frame time in ares, pictures bit-identical to v1.4), and

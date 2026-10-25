@@ -5,7 +5,9 @@
 # CART-1 test builds for the 8 / 16 MB SRAM cart (16MB-PCB-CD32X):
 #   CART=8 bash build.sh     the 8 MB cart test    -> subcpu/CDROMPlayer_cart8_music.cue
 #   CART=16 bash build.sh    the 16 MB cart test   -> subcpu/CDROMPlayer_cart16_music.cue
-# They start with the cart test screen, then the game.  Without CART: unchanged.
+#   CART=ED bash build.sh    the same test for a Mega EverDrive PRO as the RAM cart (CART-ED)
+#                            -> subcpu/CDROMPlayer_cartED_music.cue; boot it with EDBOOT.BIN (BootCamp)
+# The test is in the title's options (Detail -> Cart Test), then the game.  Without CART: unchanged.
 # Sub-CPU switches (all on by default):
 #   STREAM=0 bash build.sh   the Sub-CPU without the drive read-ahead (STREAM-1)
 #   SLOTS=0 bash build.sh    the Sub-CPU without the save slot area (SLOTS-1): one save
@@ -15,7 +17,7 @@
 set -e
 HERE="$(cd "$(dirname "$0")" && pwd)"
 CART="${CART:-}"
-case "$CART" in ""|8|16) ;; *) echo "*** CART must be 8 or 16 (or not set) - stopping"; exit 1;; esac
+case "$CART" in ""|8|16|ED) ;; *) echo "*** CART must be 8, 16 or ED (or not set) - stopping"; exit 1;; esac
 ENGINE="$HERE/../OpenLara-src/src/platform/32x"
 MARKER="SH2-OPENLARA-CD-OL1-LOADER"
 
@@ -59,7 +61,13 @@ if ! grep -q "UB-1" "$ENGINE/main.cpp"; then
   echo "==> applying engine/openlara-ub.patch to OpenLara-src (v1.7: Unfinished Business, loading pictures, credits)"
   git -C "$ENGINE/../../.." apply "$HERE/../engine/openlara-ub.patch"
 fi
-if [ -n "$CART" ]; then echo "==> CART TEST BUILD: ${CART} MB"; fi
+# CART-ED: the EverDrive PRO cart test (does nothing without CART=ED)
+if ! grep -q "CART-ED" "$ENGINE/carttest.inc"; then
+  echo "==> applying engine/openlara-cart-ed.patch to OpenLara-src (CART-ED: the EverDrive PRO cart test)"
+  git -C "$ENGINE/../../.." apply "$HERE/../engine/openlara-cart-ed.patch"
+fi
+if [ "$CART" = "ED" ]; then echo "==> CART TEST BUILD: Mega EverDrive PRO (CART-ED)";
+elif [ -n "$CART" ]; then echo "==> CART TEST BUILD: ${CART} MB"; fi
 
 echo "==> splash";    python3 "$HERE/tools/make_ol_splash.py" "$HERE/splash.jpg" "$ENGINE/data/SPLASH.BIN"
 python3 "$HERE/tools/make_boot_image.py" "$ENGINE/data/SPLASH.BIN" "$HERE/subcpu/ROMS/IMAGE.RAW"
@@ -115,5 +123,6 @@ echo "==> disc checked: OpenLara loader + OpenLara ROM"
 echo "==> CD audio";  python3 "$HERE/tools/make_music_tracks.py" "$HERE/music_map.txt" "$HERE/soundtrack_wav" "$HERE/soundtrack_cd"
 cd "$HERE/subcpu" && python3 make_mixed_cd2.py CDROMPlayer.iso $(ls "$HERE"/soundtrack_cd/Track*.wav | sort) --out "CDROMPlayer${CART:+_cart$CART}_music"
 echo "==> BURN THIS: $HERE/subcpu/CDROMPlayer${CART:+_cart$CART}_music.cue  (data + music)"
-if [ -n "$CART" ]; then echo "==> this is the ${CART} MB CART TEST disc: test screen first, then the game"; fi
+if [ "$CART" = "ED" ]; then echo "==> this is the EverDrive PRO CART TEST disc: start EDBOOT.BIN from the EverDrive menu with it in the Sega CD; the test is in Options -> Detail -> Cart Test";
+elif [ -n "$CART" ]; then echo "==> this is the ${CART} MB CART TEST disc: the test is in Options -> Detail -> Cart Test"; fi
 echo "==> done (the .iso alone has no music - burn the _music.cue above)"

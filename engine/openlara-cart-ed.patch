@@ -1,0 +1,96 @@
+diff --git a/src/platform/32x/Makefile b/src/platform/32x/Makefile
+index 3929ae3..15c8e40 100644
+--- a/src/platform/32x/Makefile
++++ b/src/platform/32x/Makefile
+@@ -47,9 +47,14 @@ SHCCFLAGS += -DCD32X_BENCH_LEVEL=$(BENCHLEVEL)
+ endif
+ 
+ # CART-1: make CD32X=1 CART=8 / CART=16 - the 8 / 16 MB cart test build (carttest.inc)
++# CART-ED: make CD32X=1 CART=ED - the same test for the Mega EverDrive PRO (EDBOOT.BIN)
+ ifdef CART
++ifeq ($(CART),ED)
++SHCCFLAGS += -DCD32X_CART_MB=16 -DCD32X_CART_ED=1
++else
+ SHCCFLAGS += -DCD32X_CART_MB=$(CART)
+ endif
++endif
+ 
+ ifdef CD32X
+ SHCCFLAGS += -DCD32X
+diff --git a/src/platform/32x/carttest.inc b/src/platform/32x/carttest.inc
+index 4c2a11a..c679469 100644
+--- a/src/platform/32x/carttest.inc
++++ b/src/platform/32x/carttest.inc
+@@ -27,7 +27,16 @@
+  * 3. A = load test: TITLE.PKD (210 KB) loaded into each good page with CMD 46, checksum shown
+  *    per page, then every page read again (still there after the others were loaded).
+  * START = window 1 back to page 1, back to the options.
++ *
++ * CART-ED: the same test for a Mega EverDrive PRO started with EDBOOT.BIN (CART=ED bash build.sh:
++ *   CD32X_CART_ED; subcpu: OL_CART_ED).  The EverDrive's windows are 512 KB: "page" p (window 1,
++ *   cart 2-4 MB) = its banks 4p .. 4p+3 in windows 4-7, written by CMD 68 to CTRL4-7.  Pages 1-6 =
++ *   banks 4-27; banks 28-31 (the EverDrive's save area and its own software) are never used.
++ *   Every line shows its banks.  FOUND 16MB = the six pages are separate memory.
+  * --------------------------------------------------------------------------------------- */
++#ifndef CD32X_CART_ED
++#define CD32X_CART_ED 0
++#endif
+ #define CT_CMD_PAGE     68
+ #define CT_PIECE        15
+ #define CT_TAIL         (0x223F0000 + CT_PIECE * 4096)     /* window 1 + 0x1FF000, cache-through */
+@@ -36,7 +45,7 @@
+ 
+ enum { CT_BLACK = 0, CT_WHITE, CT_GREEN, CT_RED, CT_YELLOW, CT_GREY };
+ 
+-static int32  ctPages;                 /* pages this build tests: 3 or 7 */
++static int32  ctPages;                 /* pages this build tests: 3 or 7 (CART-ED: 6) */
+ static int32  ctPage = 1;              /* window 1 now */
+ static int32  ctFound;                 /* 4, 8, 16 */
+ static int32  ctRes[8];                /* per page: 0 untested, -1 BAD, -2 write failed, p = holds page p's pattern */
+@@ -114,7 +123,8 @@ static void ctDraw(const char* status)
+         char t[48], *p;
+         int32 y = 8;
+         p = ctStr(t, "CART TEST  BUILD ");
+-        p = ctMB(p, ctPages == 7 ? 16 : 8);
++        if (CD32X_CART_ED) p = ctStr(p, "EVERDRIVE");
++        else               p = ctMB(p, ctPages == 7 ? 16 : 8);
+         *p = 0;
+         ctText(8, y, CT_WHITE, t); y += 16;
+         if (ctCmdFail)
+@@ -124,7 +134,7 @@ static void ctDraw(const char* status)
+             p = ctStr(t, "FOUND ");
+             p = ctMB(p, ctFound);
+             *p = 0;
+-            ctText(8, y, ctFound == (ctPages == 7 ? 16 : 8) ? CT_GREEN : CT_YELLOW, t);
++            ctText(8, y, ctFound == (ctPages >= 6 ? 16 : 8) ? CT_GREEN : CT_YELLOW, t);
+         }
+         y += 20;
+         for (int32 pg = 1; pg <= 7; pg++)
+@@ -134,8 +144,16 @@ static void ctDraw(const char* status)
+             p = ctStr(t, "PAGE ");
+             p = ctNum(p, pg, 1, false);
+             p = ctStr(p, " ");
+-            if (ctRes[pg] == pg)       p = ctStr(p, "OK     ");
+-            else if (ctRes[pg] == -1)  { p = ctStr(p, "BAD    "); col = CT_RED; }
++            if (CD32X_CART_ED)                     /* CART-ED: its EverDrive banks */
++            {
++                p = ctStr(p, "B");
++                p = ctNum(p, 4 * pg, 2, false);
++                p = ctStr(p, "-");
++                p = ctNum(p, 4 * pg + 3, 2, false);
++                p = ctStr(p, " ");
++            }
++            if (ctRes[pg] == pg)       p = ctStr(p, CD32X_CART_ED ? "OK" : "OK     ");   /* CART-ED: 40 columns */
++            else if (ctRes[pg] == -1)  { p = ctStr(p, CD32X_CART_ED ? "BAD" : "BAD    "); col = CT_RED; }
+             else                       { p = ctStr(p, "SAME AS "); p = ctNum(p, ctRes[pg], 1, false); col = CT_YELLOW; }
+             if (!ctWrOk[pg]) { p = ctStr(p, " 68K-RB"); col = CT_RED; }
+             if (ctSum[pg])
+@@ -273,7 +291,7 @@ void osCartTest()
+     MARS_WAIT();                                   /* the slave idle: it doesn't touch the cart */
+     pageWait();
+ 
+-    ctPages = (CD32X_CART_MB >= 16) ? 7 : 3;       /* every run starts clean */
++    ctPages = CD32X_CART_ED ? 6 : (CD32X_CART_MB >= 16) ? 7 : 3;   /* every run starts clean */
+     ctPage = 1; ctFound = 0; ctLen = 0; ctCmdFail = false; ctSaveOk = false;
+     for (int32 i = 0; i < 8; i++) { ctRes[i] = 0; ctWrOk[i] = true; ctSum[i] = ctSum2[i] = 0; }
+     ctPalette();

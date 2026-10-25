@@ -8,6 +8,7 @@ anything else is built: **does the page register work with the 32X on?** Design:
 ```bash
 CART=8  bash build.sh     # -> subcpu/CDROMPlayer_cart8_music.cue
 CART=16 bash build.sh     # -> subcpu/CDROMPlayer_cart16_music.cue
+CART=ED bash build.sh     # -> subcpu/CDROMPlayer_cartED_music.cue  (Mega EverDrive PRO, below)
 bash build.sh             # v1.3, unchanged (no test code in it)
 ```
 The first `CART=` build applies `engine/openlara-cart-test.patch` to `OpenLara-src` (adds
@@ -75,3 +76,27 @@ piece 15. Page 0's is cart `0x1FF000`, past the end of Caves (`build.sh` checks 
 before it in the `CART=` builds), so nothing is harmed.
 
 Send a photo or video of the screen.
+
+## CART=ED: the Mega EverDrive PRO
+
+The same test for a Mega EverDrive PRO as the RAM cart, booted with `EDBOOT.BIN` (CD32X BootCamp, `edboot/`:
+it sets the EverDrive's extended SSF mapper as a 4 MB RAM cart with the write bit on, releases the cartridge
+line and starts the Sega CD BIOS).
+
+| Part | `CART=ED` |
+|---|---|
+| `subcpu/main.c` | CMD 68 (`OL_CART_ED`): page p = the EverDrive's banks 4p … 4p+3 in its windows 4–7 (cart 2–4 MB), CTRL4–7 at `0xA130F8`–`FE` written as four words by the listener's routine 27 (`safe_cart_xfer_w`: interrupts off, RV = 1). Pages 1–6; 7 (banks 28–31) refused |
+| Engine | `engine/openlara-cart-ed.patch` (`CD32X_CART_ED`): six pages, each line shows its banks, `BUILD EVERDRIVE` |
+| Boot block, CDLOADER, `crt0.s`, `src-md/`, `hw_md.s` | none |
+
+Expected on the EverDrive (and in ares with its EverDrive PRO cart):
+```
+CART TEST  BUILD EVERDRIVE
+FOUND 16MB
+PAGE 1 B04-07 OK
+...
+PAGE 6 B24-27 OK
+SAVE AREA UNCHANGED
+```
+`FOUND 4MB` with every page `SAME AS 6`: the EverDrive's mapper did not take the writes (or the disc runs on
+another cart). The test is in Options → **Graphics** (the sunglasses) → Cart Test, as for the other builds.

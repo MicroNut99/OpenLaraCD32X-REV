@@ -273,6 +273,9 @@ static int ol_game_running = 0;   /* OL-2b: STATE 4B10 seen - no more per-pass t
 #ifndef OL_CART_MB
 #define OL_CART_MB 0                     /* CART-1: 8 or 16 = cart test build (build.sh CART=8/16) */
 #endif
+#ifndef OL_CART_ED
+#define OL_CART_ED 0                     /* CART-ED: 1 = the Mega EverDrive PRO cart test build (CART=ED) */
+#endif
 
 static uint32_t saved_lba = 0;
 /* K10: length of the file opened by CMD 38, kept here (like saved_lba) so CMD 50 never has
@@ -1221,6 +1224,23 @@ int main(void)
                byte copy, RV = 0).  No listener change.  Window 0 (the program) is never paged.
                Reply COMM12: 1 done, 0 refused.  docs: CD32X_SRAM_PAGING_PROPOSAL.md */
             int page = do_md_cmd1(MD_CMD_READ_32X_16, 0xA15122) & 0xFFFF;
+#if OL_CART_ED
+            /* CART-ED (CART=ED bash build.sh): the Mega EverDrive PRO, booted with EDBOOT.BIN, as the
+               RAM cart.  Its extended SSF mapper has 512 KB windows: window 1 of the 16MB-PCB design
+               (cart 2-4 MB) is the EverDrive's windows 4-7, CTRL4-7 at 0xA130F8-0xA130FE.  Page p =
+               banks 4p .. 4p+3, so pages 1-6 are banks 4-27; page 7 (banks 28-31: the EverDrive's save
+               area and its own software) is refused.  The four registers are written as words by the
+               existing listener routine 27 (safe_cart_xfer_w: interrupts off, RV = 1, word copy,
+               RV = 0) - the write edtest proved on the console.  No listener change. */
+            int ok = page >= 1 && page <= 6;
+            if (ok) {
+                int k;
+                for (k = 0; k < 4; k++) { PB(2 * k) = 0; PB(2 * k + 1) = (uint8_t)(4 * page + k); }
+                switch_banks();                                   /* Word RAM -> 68000 */
+                do_md_cmd3(MD_CMD_SAFE_CART_XFER_W, XM(0), 0xA130F8, 8);   /* CTRL4-7 */
+                switch_banks();
+            }
+#else
             int ok = page >= 1 && page <= 7;
             if (ok) {
                 PB(0) = (uint8_t)page;
@@ -1228,6 +1248,7 @@ int main(void)
                 cx(XM(0), 0xA130F2, 1);                           /* src, dst, 1 byte */
                 switch_banks();
             }
+#endif
             do_md_cmd2(MD_CMD_WRITE_32X_16, 0xA1512C, ok);
             do_md_cmd2(MD_CMD_WRITE_32X_16, 0xA15120, 0);
         }

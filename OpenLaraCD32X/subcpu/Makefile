@@ -18,9 +18,16 @@ CCFLAGS = -m68000 -Wall -Ofast -c -fomit-frame-pointer
 HWFLAGS = -m68000 -Wall -O1 -c -fomit-frame-pointer
 # CART-1: make cd CART=8 / CART=16 - the cart test build (CMD 68 in main.c, which is built with
 # HWFLAGS).  Without CART: unchanged.
+# CART-ED: make cd CART=ED - the same test for the Mega EverDrive PRO (booted with EDBOOT.BIN):
+# CMD 68 writes the EverDrive's CTRL4-7 instead of the 16MB-PCB's page register.
 ifdef CART
+ifeq ($(CART),ED)
+CCFLAGS += -DOL_CART_MB=16 -DOL_CART_ED=1
+HWFLAGS += -DOL_CART_MB=16 -DOL_CART_ED=1
+else
 CCFLAGS += -DOL_CART_MB=$(CART)
 HWFLAGS += -DOL_CART_MB=$(CART)
+endif
 endif
 # STREAM-1: the drive read-ahead for CMD 46 / 47 (main.c, OL_STREAM).  Default on; make cd STREAM=0
 # (or STREAM=0 bash build.sh) builds main.c exactly as before.
