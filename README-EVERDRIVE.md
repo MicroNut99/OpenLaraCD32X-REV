@@ -3,19 +3,22 @@
 Tomb Raider on the Sega CD + 32X needs a 4 MB RAM cart in the 32X slot. This lets a **Mega EverDrive PRO**
 take that cart's place, and gives the game **16 MB** to work with instead of 4.
 
+**It runs on the console** (Genesis + Sega CD + 32X, Mega EverDrive PRO, 25 Oct 2026).
+
 ## What it is
 
 - **Software only.** No new board, no soldering. A stock Mega EverDrive PRO, the 32X and the Sega CD.
-- **`EDBOOT.BIN`:** a small program you start from the EverDrive menu. It turns the EverDrive into the
-  RAM cart, then starts the Sega CD, which boots the OpenLara disc as usual.
-- **The `CART=ED` disc:** OpenLara with a cart test that checks the EverDrive's memory beyond the first
-  4 MB (Options → Graphics → Cart Test).
+- **`EDCD.32X`:** a small 32X cartridge ROM you start from the EverDrive menu with the disc in the Sega
+  CD. It turns the EverDrive into the RAM cart, starts the Sega CD itself (the console's "cartridge
+  mode"), and hands over to the disc, which loads the game into the EverDrive and runs it there.
+- **The `CART=ED` disc:** OpenLara built for it, with a cart test that checks the EverDrive's memory beyond
+  the first 4 MB (Options → Graphics → Cart Test). The same disc also boots the normal way with a RAM cart.
 
 ## What it isn't
 
 - **Not a cartridge version of the game.** Levels, music and movies still come from the CD.
 - **Not the EverDrive's "Run Mega-CD".** That plays CD images and gives the game a save-RAM cart, not
-  this memory.
+  this memory. Start `EDCD.32X` instead.
 - **Not battery-backed.** The RAM cart keeps saves without power; expect the EverDrive to lose them at
   power-off.
 - **Not using the extra 12 MB in the game yet.** The game runs in the 4 MB cart's layout; only the
@@ -28,25 +31,35 @@ take that cart's place, and gives the game **16 MB** to work with instead of 4.
 1. **The EverDrive's memory can be written.** A ROM whose header says `SEGA SSF` turns on the EverDrive's
    "extended SSF" mapper. One bit in its control register makes its 16 MB writable, and its other
    registers put any 512 KB bank of it into each 512 KB window of the cartridge space.
-2. **`EDBOOT.BIN` sets that up**: banks 0–7 in the eight windows, which is exactly the 4 MB RAM cart, with
-   writing on.
-3. **Then it lets go of the cartridge line.** Another bit tells the EverDrive to stop telling the console
-   "a cartridge is here". The console then sees only the Sega CD, so the Sega CD's BIOS starts and boots
-   the disc. The EverDrive's memory is now where a RAM cart would be.
-4. **The disc does what it always does.** Its boot stack copies the game into "the cart" and runs it
-   there. It never knows the cart is an EverDrive.
+2. **The EverDrive cannot step aside.** The plan was to let the Sega CD BIOS boot the disc as usual; on the
+   console the EverDrive stays the cartridge whatever its registers are told (CD32X BootCamp,
+   `EDPROBE`). So the boot goes the other way round:
+3. **`EDCD.32X` does what the BIOS and the disc's boot block do** - the 32X's SH2 loader from the cart, the
+   Sega CD's own processor started with its BIOS unpacked from the Sega CD's ROM, the disc's program
+   loaded - and hands over to the disc's boot stack, built a second time for the cartridge-mode memory map
+   (`MODE1=1`). The disc itself is the same; its ROM's 68000 jump table points at a RAM table so it boots
+   both ways.
+4. **The disc does what it always does**: copies the game into "the cart" and runs it there.
 5. **More than 4 MB** is the mapper again: the `CART=ED` test switches banks 4–27 into the cart's upper
    2 MB, four at a time, and checks each one.
+
+### What the console taught (it took a day of probes)
+
+The EverDrive is not a RAM cart in one respect: **with its write-enable bit on, some of the 68000's writes to
+other addresses** - work RAM, the VDP, the Sega CD's gate array, which a boot stack writes all the time -
+**land in the cart and change it, and the SH2's reads of the cart come back as zeros meanwhile.** So the
+launcher keeps that bit off, and the stack's 68000 listener turns it on only inside a copy into the cart,
+with the SH2 held off the cart. Two more: the cart's first 512 KB cannot be written by the 68000 directly
+with the 32X on (the copy goes through another window), and copies between Word RAM and the cart go through
+a buffer in work RAM. All three are in the CD32X BootCamp's `docs/12_CARTRIDGE_BOOT.md`, with the probe
+ROMs that found them (`edtest/`, `edw0/`).
 
 ## How we know the memory works
 
 The CD32X BootCamp's `edtest` ran on a Genesis + 32X + EverDrive PRO (24 Oct 2026): 27 banks (13.5 MB),
 written by the 68000 and read back by the 68000 and both SH2s, two full passes (the second with every bit
-flipped), **0 bad words**. Photos and details: CD32X BootCamp, `docs/10_EVERDRIVE_TEST.md`.
-
-**Not yet tried on a console:** step 3, `EDBOOT.BIN` handing the console to the Sega CD. In ares with its
-EverDrive PRO cart, EDBOOT boots a CD32X disc through the Sega CD BIOS, and the OpenLara cart test shows
-`FOUND 16MB`.
+flipped), **0 bad words**. Photos and details: CD32X BootCamp, `docs/10_EVERDRIVE_TEST.md`. The cartridge
+boot itself: the BootCamp disc and OpenLara, on the console, 25 Oct 2026 (`docs/12`).
 
 ## The first of its kind
 
@@ -56,22 +69,31 @@ memory of the cart it replaces.
 
 ## Build and play
 
+From the folder that holds `build.sh`, with the CD32X BootCamp checked out next to it (`BOOTCAMP=<folder>`
+otherwise) and the usual toolchain settings:
+
 ```bash
-CART=ED bash build.sh      # -> subcpu/CDROMPlayer_cartED_music.cue  (burn it)
+CART=ED EDCD=1 bash build.sh
 ```
 
-1. `EDBOOT.BIN` comes from the CD32X BootCamp (`edboot/`, `bash edboot/build.sh`). Copy it to the
-   EverDrive's SD card.
-2. Genesis + Sega CD + 32X, the EverDrive PRO in the 32X slot, the disc in the Sega CD.
-3. Start `EDBOOT.BIN` from the EverDrive menu.
+| It makes | What to do with it |
+|---|---|
+| `subcpu/CDROMPlayer_cartED_music.cue` + `.bin` | burn it (data + CD audio) |
+| `subcpu/EDCD.32X` | copy it to the EverDrive's SD card |
+
+1. Genesis + Sega CD + 32X, the EverDrive PRO in the 32X slot, the disc in the Sega CD.
+2. Start `EDCD.32X` from the EverDrive menu (not "Run Mega-CD").
 
 | You see | Meaning |
 |---|---|
-| The Sega CD logo, then OpenLara | It works |
-| A red screen | The EverDrive did not let go of the cartridge line |
-| A blue screen | No Sega CD found |
+| The boot splash, then OpenLara | It works |
+| Cyan | the 32X did not start the SH2 loader |
+| Blue | no Sega CD found |
+| Magenta | no Sub-CPU BIOS found in the Sega CD's ROM |
+| Red / yellow | the Sega CD's processor did not start / did not hand over |
 
-`EDBOOT.BIN` boots the normal OpenLara disc too, in the 4 MB layout.
+`EDCD.32X` belongs to this disc: it carries this disc's Sub-CPU program. Rebuild it when the Sub-CPU side
+changes; the disc stays. The disc also boots the normal way with a RAM cart (4 MB layout).
 
 **The cart test:** on the title, Graphics (the sunglasses) → Cart Test → A. Expected: `FOUND 16MB`,
 `PAGE 1 B04-07 OK` … `PAGE 6 B24-27 OK`, `SAVE AREA UNCHANGED`. Then A loads a level into every page.
