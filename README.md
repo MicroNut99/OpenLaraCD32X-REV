@@ -92,6 +92,8 @@ options (Detail → Cart Test). `bash build.sh` without `CART` is unchanged. See
 `docs/SRAM_8MB_16MB_DESIGN.md`.
 
 ## Mega EverDrive PRO as the RAM cart (CART=ED)
+The short version, with what it is and isn't: **[README-EVERDRIVE.md](README-EVERDRIVE.md)**.
+
 A Mega EverDrive PRO can take the RAM cart's place. Its memory, with the write bit on, was tested on the
 console as 16 MB of RAM for the 32X (CD32X BootCamp, `docs/10_EVERDRIVE_TEST.md`). **`EDBOOT.BIN`** (CD32X
 BootCamp, `edboot/`) sets it up as the RAM cart and boots the disc:
