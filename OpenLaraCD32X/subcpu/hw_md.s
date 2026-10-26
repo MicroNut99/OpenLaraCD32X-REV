@@ -537,7 +537,11 @@ md_init_hw:
         lea     vblank_int(pc),a0
         move.l  a0,0xFFFD08
 
+        .ifdef  OL_DISPON
+        move.w  #0x8174,(a4)            | MODE1-8 (DIAG=1 launcher): the Genesis display stays ON for the green text
+        .else
         move.w  #0x8134,(a4)            | OL-13: display OFF (V-int on) - no white boot text
+        .endif
         movem.l (sp)+,d2-d7/a2-a5
         move    #0x2000,sr
         rts

@@ -78,6 +78,11 @@ endif
 ifeq ($(EDSAVE),1)
 HWFLAGS += -DOL_EDSAVE=1
 endif
+# EDSAVE-D: DIAG=1 - the green diagnostic text on (Genesis display stays on), the save commands traced on row 21
+ifeq ($(DIAG),1)
+HWFLAGS += -DKOBO_DIAG_TEXT=1 -DKOBO_BOOT_TEXT=1
+ASFLAGS += --defsym OL_DISPON=1
+endif
 endif
 
 PREFIX = $(ROOTDIR)/m68k-elf/bin/m68k-elf-

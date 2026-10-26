@@ -255,7 +255,9 @@ static void cd_chunk_read(uint8_t *dst, int lba, int n, int file_end)
    0 = print_diag() prints nothing at all: every print_diag() call stays in the code, so
    setting 1 again brings all the text back.  (Chilly's white 32X start-up messages come
    from hw_md.s and are not affected.) */
-#define KOBO_DIAG_TEXT        0          /* D32X M1: on - the boot steps must be visible */
+#ifndef KOBO_DIAG_TEXT
+#define KOBO_DIAG_TEXT        0          /* D32X M1: on - the boot steps must be visible (Makefile DIAG=1: on) */
+#endif
 
 /* K30 - BOOT TEXT.  0 = the Genesis display is switched OFF at the very start of main(), so
    neither the green text nor Chilly's white 32X start-up messages appear (dev request): the
@@ -265,8 +267,10 @@ static void cd_chunk_read(uint8_t *dst, int lba, int n, int file_end)
                                                    the 68K; it only writes its heartbeat twice a second. */
 static int sub_quiet = 0;
 static int ol_game_running = 0;   /* OL-2b: STATE 4B10 seen - no more per-pass text */
+#ifndef KOBO_BOOT_TEXT
 #define KOBO_BOOT_TEXT        0          /* K31: on - Chilly's white 32X start-up messages show
                                                    (green text stays off: KOBO_DIAG_TEXT 0) */
+#endif
 
 #define LEGACY_68K_CART 0
 
@@ -308,6 +312,23 @@ static const char *find_sh2_marker(const char *p, int len)
             return p + i + 5;
     return 0;
 }
+
+#if KOBO_DIAG_TEXT
+/* EDSAVE-D: the save commands traced on row 21 (DIAG=1 launcher): T:<cmd> P<piece> S<step> N<count> */
+static char *trace_tmp;
+static unsigned trace_n57, trace_n58, trace_n61, trace_n62;
+static void trace_save(int cmd, int piece, int step)
+{
+    char tb[48];
+    void print_diag(char *temp, const char *msg, int x, int y);
+    sprintf(tb, "T%02d P%03X S%d 57:%u 58:%u 61:%u 62:%u  ", cmd, piece & 0xFFF, step,
+            trace_n57 % 10000, trace_n58 % 10000, trace_n61 % 100, trace_n62 % 1000);
+    print_diag(trace_tmp, tb, 2, 21);
+}
+#define TRACE_SAVE(c, p, st) trace_save((c), (p), (st))
+#else
+#define TRACE_SAVE(c, p, st) ((void)0)
+#endif
 
 void print_diag(char *temp, const char *msg, int x, int y) {
     if (quiet) return;
@@ -623,6 +644,9 @@ int main(void)
 
     char *temp = (char *)0x0C0000;
     char tbuf[64];
+#if KOBO_DIAG_TEXT
+    trace_tmp = temp;
+#endif
     uint32_t build_counter = 0;
     int cart_ok = 0;
 
@@ -1113,7 +1137,7 @@ int main(void)
             while (1) { }
         }
         else if (cmd == 44) {
-#if !SLIDESHOW_DEBUG
+#if !SLIDESHOW_DEBUG && !KOBO_DIAG_TEXT
             if (!quiet) { do_md_cmd0(MD_CMD_CLEAR_B); do_md_cmd0(MD_CMD_CLEAR_A); quiet = 1; }
 #endif
             do_md_cmd2(MD_CMD_WRITE_32X_16, 0xA15120, 0);
@@ -1187,6 +1211,10 @@ int main(void)
             /* K36 - CMD 57 get / CMD 58 put one word of the 128-byte buffer: COMM2 = word index,
                COMM8 = value (58: written by the SH2 before the command; 57: our reply). */
             int wi = do_md_cmd1(MD_CMD_READ_32X_16, 0xA15122) & (BRAM_BYTES / 2 - 1);   /* OL-5 */
+#if KOBO_DIAG_TEXT
+            if (cmd == 58) trace_n58++; else trace_n57++;
+            if (((trace_n57 + trace_n58) & 255) == 0) TRACE_SAVE(cmd, wi, 0);
+#endif
             if (cmd == 58) {
                 int v = do_md_cmd1(MD_CMD_READ_32X_16, 0xA15128);
                 bram_buf[wi * 2] = (uint8_t)(v >> 8); bram_buf[wi * 2 + 1] = (uint8_t)v;
@@ -1214,6 +1242,10 @@ int main(void)
 #endif
             int k, ok = 1;
             volatile uint8_t *wr = (volatile uint8_t *)0x0C0000;
+#if KOBO_DIAG_TEXT
+            trace_n61++;
+#endif
+            TRACE_SAVE(61, piece, 1);                   /* (prints before the buffer is filled) */
             for (k = 0; k < 4096; k++) wr[k] = bram_buf[k];
             switch_banks();
 #if OL_EDSAVE
@@ -1221,7 +1253,13 @@ int main(void)
                listener's window-1 route: RV = 1, W on for the write only) */
             (void)coff;
             do_md_cmd3(MD_CMD_CHILLY_RV_MEMCPY, ED_SAVE_68K + ed_save_off(piece), 0x200000, 4096);
+#if KOBO_DIAG_TEXT
+            switch_banks(); TRACE_SAVE(61, piece, 2); switch_banks();   /* written */
+#endif
             do_md_cmd3(MD_CMD_CHILLY_RV_MEMCPY, 0x208000, ED_SAVE_68K + ed_save_off(piece), 4096);
+#if KOBO_DIAG_TEXT
+            switch_banks(); TRACE_SAVE(61, piece, 3); switch_banks();   /* read back */
+#endif
 #else
             do_md_cmd3(MD_CMD_CHILLY_RV_MEMCPY, 0x400000 + coff, 0x200000, 4096);
             do_md_cmd2(MD_CMD_WRITE_32X_16, 0xA15104, (int)(coff >> 20) & 3);
@@ -1239,6 +1277,7 @@ int main(void)
 #if OL_EDSAVE
             if (ok) ok |= 0x200;                    /* EDSAVE-1: it went to the save bank */
 #endif
+            TRACE_SAVE(61, piece, ok ? 4 : 9);
             do_md_cmd2(MD_CMD_WRITE_32X_16, 0xA1512C, ok);
             do_md_cmd2(MD_CMD_WRITE_32X_16, 0xA15120, 0);
         }
@@ -1250,6 +1289,10 @@ int main(void)
                are in the EverDrive's save bank: read them this way, the cart has none). */
             int piece = do_md_cmd1(MD_CMD_READ_32X_16, 0xA15122);
             int caps = 1 | (OL_SLOTS ? 0x100 : 0) | (OL_EDSAVE ? 0x200 : 0);
+#if KOBO_DIAG_TEXT
+            trace_n62++;
+#endif
+            TRACE_SAVE(62, piece, 1);
 #if OL_EDSAVE
             if (piece != 0x8000) {
                 int k;
@@ -1257,9 +1300,11 @@ int main(void)
                 switch_banks();
                 do_md_cmd3(MD_CMD_CHILLY_RV_MEMCPY, 0x208000, ED_SAVE_68K + ed_save_off(piece), 4096);
                 switch_banks();
+                TRACE_SAVE(62, piece, 2);
                 for (k = 0; k < 4096; k++) bram_buf[k] = rd[k];
             }
 #endif
+            TRACE_SAVE(62, piece, 3);
             do_md_cmd2(MD_CMD_WRITE_32X_16, 0xA1512C, caps);
             do_md_cmd2(MD_CMD_WRITE_32X_16, 0xA15120, 0);
         }
@@ -1318,6 +1363,9 @@ int main(void)
                32X picture shows alone; on brings everything back (it stays in video RAM).
                WHY: the 32X priority bit alone did not hide the text reliably (K17/K18). */
             int on = do_md_cmd1(MD_CMD_READ_32X_16, 0xA15122) & 1;
+#if KOBO_DIAG_TEXT
+            on = 1;                                     /* EDSAVE-D: the diagnostic launcher keeps the text on */
+#endif
             do_md_cmd1(MD_CMD_SET_VDP_REG, on ? 0x8174 : 0x8134);
             do_md_cmd2(MD_CMD_WRITE_32X_16, 0xA15120, 0);
         }
