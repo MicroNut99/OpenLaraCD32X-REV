@@ -115,7 +115,7 @@ RV = 1 is not held until RV = 0, as the 32X manual implies and the stack assumed
 once with garbage (the slave read ~100% bad words through every such copy, the master too). Any code
 fetch in those milliseconds kills the SH2 a moment later: that was the passport freeze, which came in
 the game (cold cache) and not at the title (the poll loop cached), with a PSRAM bank and with window 7
-just the same. The cartridge-boot listener reaches the bank as cart
+just the same. Confirmed on the console 26 Oct 2026: save, load, relaunch, load. The cartridge-boot listener reaches the bank as cart
 `0x800000`-`0x83FFFF` through window 1 (hw_md.s MODE1-7), the way it reaches window 0. The launcher's
 header declares save RAM (`RA`), which is what makes the EverDrive OS keep `bram.srm`. Measured with
 the CD32X BootCamp's `edsave/EDSAVE1.32X`: three menu round trips, banks 0 and 7 blank each time,
