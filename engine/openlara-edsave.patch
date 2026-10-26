@@ -66,7 +66,7 @@ diff --git a/src/platform/32x/main.cpp b/src/platform/32x/main.cpp
      volatile uint16* s = (volatile uint16*)(CS_BASE + ofs);
      for (int32 i = 0; i < len; i += 2)
      {
-@@ -469,6 +525,13 @@
+@@ -469,6 +525,15 @@
      return (piece & CS_SLOT_PIECE) ? CS_SLOTS + uint32(piece & 31) * CS_PIECE : CS_SET + uint32(piece) * CS_PIECE;
  }
  
@@ -77,20 +77,23 @@ diff --git a/src/platform/32x/main.cpp b/src/platform/32x/main.cpp
 +         : int32(ofs - CS_SET) >> 12;
 +}
 +
++static void csSlotsChanged();
++
  static void csFlushPiece()
  {
      if (csPiece < 0 || !csDirty) return;
-@@ -482,7 +545,8 @@
+@@ -482,7 +547,9 @@
      CD_COMM12_16 = 0;
      cdCmd(CS_CMD_TO_CART);
      if ((CD_COMM12_16 & 0xFF) != 1) csOk = false;
 -    if ((csPiece & CS_SLOT_PIECE) && CD_COMM12_16 != 0x101) csOk = false;   /* SLOTS-1 */
 +    if ((csPiece & CS_SLOT_PIECE) && (CD_COMM12_16 & 0x1FF) != 0x101) csOk = false;   /* SLOTS-1 */
 +    rdPiece = -1;                                    /* EDSAVE-1: the Sub-CPU's buffer is ours now */
++    csSlotsChanged();                                /* EDSAVE-1: a slot's level may have changed */
      csDirty = false;
  }
  
-@@ -521,6 +585,12 @@
+@@ -521,6 +588,12 @@
  
  static uint32 cartRead32(uint32 ofs)
  {
@@ -103,7 +106,7 @@ diff --git a/src/platform/32x/main.cpp b/src/platform/32x/main.cpp
      volatile uint16* s = (volatile uint16*)(CS_BASE + ofs);
      return ((uint32)s[0] << 16) | s[1];
  }
-@@ -594,6 +664,8 @@
+@@ -594,6 +667,8 @@
  #ifdef CD32X_NO_SLOTS
      return 0;
  #else
@@ -112,3 +115,43 @@ diff --git a/src/platform/32x/main.cpp b/src/platform/32x/main.cpp
      if (gSlotsOk < 0)
      {
          csFlushPiece();
+@@ -610,7 +685,14 @@
+ #endif
+ }
+ 
+-int32 osSaveSlotLevel(int32 slot)           /* the level saved in a slot, -1 = empty */
++/* EDSAVE-1: the passport draws every listed slot's level EVERY FRAME (OPT_SLOT), and a read of the
++   save bank is a Sub-CPU round trip per piece and per word: 16 slots per frame froze the save page
++   on the console (25 Oct 2026).  So the levels are read once and kept; a write to the save area
++   (csFlushPiece) forgets them. */
++static int32 slotLevel[CS_SLOT_COUNT + 1];   /* [16] = the old single save (slot -1) */
++static bool  slotLevelKnown[CS_SLOT_COUNT + 1];
++
++static int32 slotLevelRead(int32 slot)
+ {
+     uint32 b = slotBase(slot);
+     if (cartRead32(b) != 0x4F4C474D) return -1;                /* 'OLGM' */
+@@ -622,6 +704,23 @@
+     return tmp.level;
+ }
+ 
++static void csSlotsChanged()
++{
++    for (int32 i = 0; i <= CS_SLOT_COUNT; i++) slotLevelKnown[i] = false;
++}
++
++int32 osSaveSlotLevel(int32 slot)           /* the level saved in a slot, -1 = empty */
++{
++    int32 k = (slot < 0) ? CS_SLOT_COUNT : slot;
++    if (k > CS_SLOT_COUNT) return slotLevelRead(slot);
++    if (!slotLevelKnown[k])
++    {
++        slotLevel[k] = slotLevelRead(slot);
++        slotLevelKnown[k] = true;
++    }
++    return slotLevel[k];
++}
++
+ bool osCheckSave()
+ {
+     return osSaveSlotLevel(gSaveSlot) >= 0;
