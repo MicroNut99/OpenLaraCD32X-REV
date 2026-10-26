@@ -287,6 +287,9 @@ static int ol_game_running = 0;   /* OL-2b: STATE 4B10 seen - no more per-pass t
                                             the EverDrive menu wipes.  The cartridge-boot listener (hw_md.s
                                             MODE1-7, M1SAVE=1) reaches that bank as cart 0x800000. */
 #endif
+#ifndef OL_EDSAVE_NOVERIFY
+#define OL_EDSAVE_NOVERIFY 0
+#endif
 #if OL_EDSAVE
 #define ED_SAVE_68K   0x800000UL         /* EDSAVE-1: the save bank as the 68000 side addresses it */
 /* the bank's layout: the 64 KB save area (settings, old single save, records) at 0, the 16 slots at
@@ -806,6 +809,18 @@ int main(void)
                         do_md_cmd1(MD_CMD_READ_32X_16, 0xA15126),
                         do_md_cmd1(MD_CMD_READ_32X_16, 0xA1512A));
                 if (!ol_game_running) print_diag(temp, tbuf, 2, 19);   /* OL-2b */
+                else if ((hb_pass & 1023) == 0) {
+                    /* EDSAVE-D: in the game, every 16th heartbeat: all eight COMM registers, so a
+                       freeze shows what is pending (C0 = a Sub-CPU command, C4/C6 = the SH2s' own) */
+                    sprintf(tbuf, "G%04X C0 %04X C2 %04X C4 %04X C6 %04X", hb_pass,
+                            do_md_cmd1(MD_CMD_READ_32X_16, 0xA15120), do_md_cmd1(MD_CMD_READ_32X_16, 0xA15122),
+                            do_md_cmd1(MD_CMD_READ_32X_16, 0xA15124), do_md_cmd1(MD_CMD_READ_32X_16, 0xA15126));
+                    print_diag(temp, tbuf, 2, 19);
+                    sprintf(tbuf, "C8 %04X CA %04X CC %04X CE %04X        ",
+                            do_md_cmd1(MD_CMD_READ_32X_16, 0xA15128), do_md_cmd1(MD_CMD_READ_32X_16, 0xA1512A),
+                            do_md_cmd1(MD_CMD_READ_32X_16, 0xA1512C), do_md_cmd1(MD_CMD_READ_32X_16, 0xA1512E));
+                    print_diag(temp, tbuf, 2, 20);
+                }
 #endif
             }
         }
@@ -1256,7 +1271,14 @@ int main(void)
 #if KOBO_DIAG_TEXT
             switch_banks(); TRACE_SAVE(61, piece, 2); switch_banks();   /* written */
 #endif
+#if OL_EDSAVE_NOVERIFY
+            /* EDSAVE-D2 (Makefile NOVERIFY=1, a diagnostic): no read-back - the buffer is copied over
+               itself so the compare below passes.  Tells whether the 68000's read of the bank (RV = 1)
+               is what freezes the game after a save. */
+            { volatile uint8_t *w2 = (volatile uint8_t *)0x0C8000; switch_banks(); for (k = 0; k < 4096; k++) w2[k] = bram_buf[k]; switch_banks(); }
+#else
             do_md_cmd3(MD_CMD_CHILLY_RV_MEMCPY, 0x208000, ED_SAVE_68K + ed_save_off(piece), 4096);
+#endif
 #if KOBO_DIAG_TEXT
             switch_banks(); TRACE_SAVE(61, piece, 3); switch_banks();   /* read back */
 #endif
