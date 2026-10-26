@@ -74,6 +74,12 @@ endif
 # kept on the SD card); EDSAVE=1 the Sub-CPU keeps OpenLara's settings and save slots there (CMD 61/62)
 ifeq ($(M1SAVE),1)
 ASFLAGS += --defsym OL_M1SAVE=1
+ifdef M1SAVEBANK
+ASFLAGS += --defsym OL_M1SAVEBANK=$(M1SAVEBANK)   # MODE1-7b: another bank (27 = PSRAM, a test)
+endif
+ifdef M1SAVEWIN
+ASFLAGS += --defsym OL_M1SAVEWIN=$(M1SAVEWIN)     # MODE1-7b: through another window (1-7)
+endif
 endif
 ifeq ($(EDSAVE),1)
 HWFLAGS += -DOL_EDSAVE=1

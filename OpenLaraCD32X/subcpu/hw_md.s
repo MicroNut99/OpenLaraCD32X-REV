@@ -62,7 +62,14 @@
         .ifndef OL_M1SAVE
         .equ    OL_M1SAVE, 0
         .endif
+| MODE1-7b (EDSAVE-3 tests): M1SAVEBANK=<n> the bank the saves go to (31; 27 = a PSRAM bank, for a test:
+| nothing persists), M1SAVEWIN=<1-7> the window the bank is shown in for the block (1).  Defaults = MODE1-7.
+        .ifndef OL_M1SAVEBANK
         .equ    OL_M1SAVEBANK, 31
+        .endif
+        .ifndef OL_M1SAVEWIN
+        .equ    OL_M1SAVEWIN, 1
+        .endif
 | MODE1-6: the EverDrive's write-enable bit (CTRL0 bit 13, W) is OFF except inside a copy INTO the
 | cart.  Console, 25 Oct 2026 (edw0): with W on, some of the 68000's writes to OTHER addresses (work
 | RAM, the VDP, the gate array - what a listener does all the time) land in the cart, and the SH2's
@@ -1567,9 +1574,29 @@ m1_xfer:
         rts
 
 | the cart side of a block: d4 = 0 the cart is a1, else a0.  In window 0 -> through window 1.
+| MODE1-7b: one block through a window: \reg = the window's bank register, \back = its bank again.
+| a3 = what to add to the address for the copy, d1 = the bank the window shows meanwhile.
+        .macro  M1_WINBLOCK reg, back
+        move.w  sr,-(sp)
+        move.w  #0x2700,sr
+        bset    #0,0xA15107
+        move.w  d1,\reg                 /* the window = that bank */
+        tst.w   d4
+        bne.b   5f
+        adda.l  a3,a1
+        bsr     m1_cpy_w                /* a write into the cart: W on inside */
+        suba.l  a3,a1
+        bra.b   6f
+5:      adda.l  a3,a0
+        bsr     m1_cpy                  /* a read from the cart: W stays off */
+        suba.l  a3,a0
+6:      move.w  #\back,\reg             /* the window = its own bank again */
+        bclr    #0,0xA15107
+        move.w  (sp)+,sr
+        rts
+        .endm
 m1_cart:
         .if OL_M1SAVE
-| MODE1-7: a3 = what to add to the address for the copy, d1 = the bank window 1 shows meanwhile
         tst.w   d4
         bne.b   1f
         move.l  a1,d1
@@ -1579,30 +1606,14 @@ m1_cart:
         blo.b   3f
         cmpi.l  #0x840000,d1
         bhs     m1_rvcpy                /* above the save bank's 256 KB: never sent */
-        movea.l #0x080000-0x800000,a3   /* the save bank, through window 1 */
+        movea.l #(OL_M1SAVEWIN*0x080000)-0x800000,a3   /* the save bank, through window OL_M1SAVEWIN */
         moveq   #OL_M1SAVEBANK,d1
-        bra.b   4f
+        M1_WINBLOCK 0xA130F0+2*OL_M1SAVEWIN, OL_M1SAVEWIN
 3:      cmpi.l  #0x080000,d1
         bhs     m1_rvcpy
         movea.l #0x080000,a3            /* window 0, through window 1 (MODE1-3) */
         move.w  #OL_M1W0BANK,d1
-4:      move.w  sr,-(sp)
-        move.w  #0x2700,sr
-        bset    #0,0xA15107
-        move.w  d1,0xA130F2             /* window 1 = that bank */
-        tst.w   d4
-        bne.b   5f
-        adda.l  a3,a1
-        bsr.b   m1_cpy_w                /* a write into the cart: W on inside */
-        suba.l  a3,a1
-        bra.b   6f
-5:      adda.l  a3,a0
-        bsr.b   m1_cpy                  /* a read from the cart: W stays off */
-        suba.l  a3,a0
-6:      move.w  #1,0xA130F2             /* window 1 = bank 1 again */
-        bclr    #0,0xA15107
-        move.w  (sp)+,sr
-        rts
+        M1_WINBLOCK 0xA130F2, 1
         .else
         tst.w   d4
         bne.b   1f
