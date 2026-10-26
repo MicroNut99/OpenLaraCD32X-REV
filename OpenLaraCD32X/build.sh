@@ -75,10 +75,14 @@ if ! grep -q "CART-ED" "$ENGINE/carttest.inc"; then
   echo "==> applying engine/openlara-cart-ed.patch to OpenLara-src (CART-ED: the EverDrive PRO cart test)"
   git -C "$ENGINE/../../.." apply "$HERE/../engine/openlara-cart-ed.patch"
 fi
-# EDSAVE-1: the saves through the Sub-CPU when they are in the EverDrive's save bank (does nothing without CART=ED)
-if ! grep -q "EDSAVE-1" "$ENGINE/main.cpp"; then
+# EDSAVE-1: the saves through the Sub-CPU when they are in the EverDrive's save bank.  Applied with
+# EDCD_SAVE=1, taken out again without it, so a build without EDCD_SAVE is the game as before (saves in the cart)
+if [ "${EDCD_SAVE:-0}" = 1 ] && ! grep -q "EDSAVE-1" "$ENGINE/main.cpp"; then
   echo "==> applying engine/openlara-edsave.patch to OpenLara-src (EDSAVE-1: saves on the EverDrive's SD card)"
   git -C "$ENGINE/../../.." apply "$HERE/../engine/openlara-edsave.patch"
+elif [ "${EDCD_SAVE:-0}" != 1 ] && grep -q "EDSAVE-1" "$ENGINE/main.cpp"; then
+  echo "==> taking engine/openlara-edsave.patch out of OpenLara-src (no EDCD_SAVE: saves in the cart, as before)"
+  git -C "$ENGINE/../../.." apply -R "$HERE/../engine/openlara-edsave.patch"
 fi
 if [ "$CART" = "ED" ]; then echo "==> CART TEST BUILD: Mega EverDrive PRO (CART-ED)";
 elif [ -n "$CART" ]; then echo "==> CART TEST BUILD: ${CART} MB"; fi
