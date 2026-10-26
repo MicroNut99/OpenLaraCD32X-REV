@@ -7,7 +7,7 @@
 #   CART=16 bash build.sh    the 16 MB cart test   -> subcpu/CDROMPlayer_cart16_music.cue
 #   CART=ED bash build.sh    the same test for a Mega EverDrive PRO as the RAM cart (CART-ED)
 #                            -> subcpu/CDROMPlayer_cartED_music.cue; with EDCD=1 below
-#   EDCD=1 bash build.sh     also subcpu/EDCD.32X: the disc started from the Mega EverDrive PRO, which stays
+#   EDCD=1 bash build.sh     also subcpu/EDCD_OPENLARA.32X: the disc started from the Mega EverDrive PRO, which stays
 #                            (EDCD_X=1: CTRL0 with the EverDrive's X bit; EDCD_W0=<bank>: the game in that bank)
 #   EDCD_DIAG=1              with EDCD=1: EDCD.32X with the Sub-CPU's green diagnostic text on (the disc is the
 #                            same; only the launcher differs): boot steps, heartbeat, the save commands traced
@@ -159,14 +159,14 @@ echo "==> done (the .iso alone has no music - burn the _music.cue above)"
 if [ "${EDCD:-0}" = 1 ]; then
   BC="${BOOTCAMP:-$HERE/../CD32X-BootCamp}"
   [ -f "$BC/edboot/build_edcd.sh" ] || { echo "*** EDCD=1 needs the CD32X BootCamp next to this folder (or BOOTCAMP=<folder>): not at $BC"; exit 1; }
-  echo "==> EDCD.32X: the disc started from the EverDrive PRO (cartridge boot)"
+  echo "==> EDCD_OPENLARA.32X: the disc started from the EverDrive PRO (cartridge boot)"
   T=$(mktemp -d); mkdir -p "$T/subcpu/ROMS" "$T/sh2"
   find "$HERE/subcpu" -maxdepth 1 -type f -exec cp {} "$T/subcpu/" \;
   cp "$HERE/sh2/CDLOADER.32x" "$T/sh2/"
   ( cd "$T/subcpu" && make clean > /dev/null && make CDROMPlayer.bin MODE1=1 M1CTRL0=$([ "${EDCD_X:-0}" = 1 ] && echo 0xC000 || echo 0x8000) ${EDCD_W0:+M1W0BANK=$EDCD_W0} ${EDCD_SAVE:+M1SAVE=$EDCD_SAVE EDSAVE=$EDCD_SAVE} ${EDCD_SAVEBANK:+M1SAVEBANK=$EDCD_SAVEBANK} ${EDCD_SAVEWIN:+M1SAVEWIN=$EDCD_SAVEWIN} ${EDCD_DIAG:+DIAG=$EDCD_DIAG} ${EDCD_NOVERIFY:+NOVERIFY=$EDCD_NOVERIFY} ${M1WORDS:+M1WORDS=$M1WORDS} ${CART:+CART=$CART} ${STREAM:+STREAM=$STREAM} ${SLOTS:+SLOTS=$SLOTS} ${FMVRING:+FMVRING=$FMVRING} ${CARTW:+CARTW=$CARTW} ${UB:+UB=$UB} > "$T/mode1.log" 2>&1 ) \
     || { tail -20 "$T/mode1.log"; echo "*** the MODE1 Sub-CPU program did not build"; exit 1; }
-  bash "$BC/edboot/build_edcd.sh" "$T/subcpu/CDROMPlayer.bin" "$HERE/sh2/CDLOADER.32x" "$HERE/subcpu/EDCD.32X"
+  bash "$BC/edboot/build_edcd.sh" "$T/subcpu/CDROMPlayer.bin" "$HERE/sh2/CDLOADER.32x" "$HERE/subcpu/EDCD_OPENLARA.32X"
   rm -rf "$T"
-  echo "==> EDCD.32X: $HERE/subcpu/EDCD.32X - copy it to the EverDrive's SD card and start it from the menu"
+  echo "==> EDCD_OPENLARA.32X: $HERE/subcpu/EDCD_OPENLARA.32X - copy it to the EverDrive's SD card and start it from the menu"
   echo "    with the disc above in the Sega CD (not \"Run Mega-CD\")"
 fi
