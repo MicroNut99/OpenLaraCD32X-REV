@@ -1,0 +1,38 @@
+diff --git a/src/platform/32x/main.cpp b/src/platform/32x/main.cpp
+index a133c04..f8d05ed 100644
+--- a/src/platform/32x/main.cpp
++++ b/src/platform/32x/main.cpp
+@@ -71,8 +71,13 @@ extern void* SPLASH_BIN;                           /* asm/data.s */
+ #define SPL_TOP     14
+ #define BAR_X0      14                             /* outer edge, even */
+ #define BAR_X1      306                            /* outer edge, exclusive, even */
+-#define BAR_Y0      198
+-#define BAR_Y1      214
++/* OL-BAR (MicroNut99, 26 Oct 2026): the level loading bar is a thin white line with no box around
++   it - it was a 16-pixel red bar inside a 2-pixel frame (C_EDGE).  Same centre line as before, so
++   it sits where the old bar's middle was; the rows it no longer covers are the black letterbox
++   under the picture, which splashPage draws anyway.  The CD loader's own boot screen is untouched
++   (it draws no bar at all - sh2/cdloader_sh2.c, OL-7). */
++#define BAR_Y0      203                            /* was 198 (16 rows, framed) */
++#define BAR_Y1      209                            /* was 214 */
+ #define C_BLACK     252
+ #define C_BARBG     253
+ #define C_BAR       254
+@@ -86,14 +91,13 @@ static const uint16* gGamePalette = 0;             /* OL-3: the game palette, re
+ 
+ static uint8 splashBarColor(int32 x, int32 y, int32 fill)
+ {
+-    if (y < BAR_Y0 + 2 || y >= BAR_Y1 - 2 || x < BAR_X0 + 2 || x >= BAR_X1 - 2)
+-        return C_EDGE;
+-    return (x - (BAR_X0 + 2) < fill) ? C_BAR : C_BARBG;
++    (void)y;                                       /* OL-BAR: no frame, so no edge rows or columns */
++    return (x - BAR_X0 < fill) ? C_BAR : C_BARBG;
+ }
+ 
+ static void splashBar(int32 done, int32 total)
+ {
+-    int32 inner = (BAR_X1 - 2) - (BAR_X0 + 2);
++    int32 inner = BAR_X1 - BAR_X0;                 /* OL-BAR: the whole width, there is no frame */
+     int32 fill = (total > 0) ? (inner * done) / total : 0;
+     volatile uint16* fb = (volatile uint16*)&MARS_FRAMEBUFFER + 0x100;
+     for (int32 y = BAR_Y0; y < BAR_Y1; y++)

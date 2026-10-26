@@ -2,7 +2,8 @@
 """make_ol_splash.py - picture -> SPLASH.BIN for OpenLara CD32X's loading screen
     python3 make_ol_splash.py splash.jpg OpenLara-src/src/platform/32x/data/SPLASH.BIN
 SPLASH.BIN = 256 palette entries (32X BGR555, big-endian, 512 bytes) + 320 x 180 pixels (bytes).
-Indices 0-251: the picture.  252 black, 253 bar background, 254 bar (red), 255 bar edge.
+Indices 0-251: the picture.  252 black, 253 bar background, 254 bar (OL-BAR: white), 255 bar edge
+(unused since OL-BAR took the frame off the bar; the CD loader's boot screen draws no bar at all).
 The picture is scaled to 320 wide and cropped/padded to 180 high (16:9).
 If a file VERSION sits next to the picture, its text (e.g. v1.1) is drawn in the bottom-right corner."""
 import struct, sys
@@ -56,7 +57,7 @@ def main():
         out += struct.pack(">H", bgr555(pal[i * 3], pal[i * 3 + 1], pal[i * 3 + 2]))
     out += struct.pack(">H", 0x0400)                        # 252 black
     out += struct.pack(">H", 8)                             # 253 bar background (dark red)
-    out += struct.pack(">H", 31)                            # 254 bar (bright red)
+    out += struct.pack(">H", 31 | (31 << 5) | (31 << 10))   # 254 bar (OL-BAR: white, was bright red)
     out += struct.pack(">H", 16 | (3 << 5) | (3 << 10))     # 255 bar edge
     pix = q.tobytes()
     if pix_swap:

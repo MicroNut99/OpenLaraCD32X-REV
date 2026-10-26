@@ -91,6 +91,12 @@ elif [ "${EDCD_SAVE:-0}" != 1 ] && grep -q "EDSAVE-1" "$ENGINE/main.cpp"; then
   echo "==> taking engine/openlara-edsave.patch out of OpenLara-src (no EDCD_SAVE: saves in the cart, as before)"
   git -C "$ENGINE/../../.." apply -R "$HERE/../engine/openlara-edsave.patch"
 fi
+# OL-BAR (MicroNut99, 26 Oct 2026): the level loading bar - thin, white, no box around it. Applied to
+# every build; the CD loader's own boot screen is not touched (it draws no bar: sh2/cdloader_sh2.c OL-7).
+if ! grep -q "OL-BAR" "$ENGINE/main.cpp"; then
+  echo "==> applying engine/openlara-bar.patch to OpenLara-src (OL-BAR: the thin white loading bar)"
+  git -C "$ENGINE/../../.." apply "$HERE/../engine/openlara-bar.patch"
+fi
 if [ "$CART" = "ED" ]; then echo "==> CART TEST BUILD: Mega EverDrive PRO (CART-ED)";
 elif [ -n "$CART" ]; then echo "==> CART TEST BUILD: ${CART} MB"; fi
 
