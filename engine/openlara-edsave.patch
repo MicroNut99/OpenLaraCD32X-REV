@@ -1,7 +1,68 @@
 diff --git a/src/platform/32x/main.cpp b/src/platform/32x/main.cpp
+index 5203039..f1fd748 100644
 --- a/src/platform/32x/main.cpp
 +++ b/src/platform/32x/main.cpp
-@@ -434,8 +434,89 @@
+@@ -34,6 +34,41 @@ static void cdCmd(uint16 cmd)
+         cdPause();
+ }
+ 
++/* EDSAVE-4 (edsave3, console, 26 Oct 2026): on the Mega EverDrive PRO an SH2's cart access while the
++   68000 holds RV = 1 is NOT held until RV = 0 - it is answered at once with garbage (the slave read
++   ~100% bad words through every such copy, the master too; code fetched that way ran).  So for every
++   command whose 68000 side copies with RV = 1 (46: a level chunk, 61/62: the save bank) both SH2s sit
++   in a loop that lives in SDRAM (.data.sdram) with their interrupts masked: nothing fetches or reads
++   the cart until the Sub-CPU says the copy is over.  This is why the passport froze in the game and
++   not at the title: in the game the cache is cold and the master's poll loop or its vblank handler
++   got fetched from the cart during a copy. */
++#define MARS_CMD_PARK         0x7A60        /* slave: into the SDRAM loop, answer PARK_ACK in COMM4 */
++#define MARS_CMD_PARK_ACK     0x7A61        /*        ... and stay there while COMM4 == PARK_ACK  */
++
++__attribute__((section(".data.sdram"), noinline))
++static void csSpin(volatile uint16* reg, uint16 value, int32 whileEqual, uint16 ack)
++{   /* runs from SDRAM: interrupts masked, spin while (*reg == value) == whileEqual.  No calls, no
++       cart data: this function and its stack are the only memory touched.  ack != 0: write it to
++       *reg first (the slave: "I am in SDRAM now"). */
++    uint32 sr, masked;
++    __asm__ volatile ("stc sr,%0" : "=r"(sr));
++    masked = sr | 0xF0u;
++    __asm__ volatile ("ldc %0,sr" : : "r"(masked));
++    if (ack) *reg = ack;
++    for (int32 n = 0; n < 4000000; n++)
++    {
++        if (((*reg == value) ? 1 : 0) != whileEqual) break;
++        for (volatile int32 k = 0; k < 64; k++) {}    /* hardware rule: never hammer a COMM register */
++    }
++    __asm__ volatile ("ldc %0,sr" : : "r"(sr));
++}
++
++static void cdCmdSafe(uint16 cmd)                    /* a command whose 68000 side holds RV = 1 */
++{
++    MARS_SYS_COMM0 = cmd;
++    csSpin(&MARS_SYS_COMM0, 0, 0, 0);                /* from SDRAM until COMM0 == 0 */
++}
++
+ /* ---------------------------------------------------------------------------------------
+  * OL-2b: levels are loaded from the CD into the RAM cart (cart offset 2 MB = slot 16).
+  *   CMD 38 with COMM2 = 100 + LevelID opens "<level>.PKD" (subcpu/main.c maps the names),
+@@ -204,7 +239,7 @@ static int32 cdLoadToCart(uint16 file)
+     {
+         MARS_SYS_COMM2 = (uint16)(c | 0x8000);     /* OL-13: no read-back (faster) */
+         CD_COMM12_16 = 0;                           /* the Sub-CPU replies 0 = done */
+-        cdCmd(CD_CMD_CHUNK_TO_CART);
++        cdCmdSafe(CD_CMD_CHUNK_TO_CART);              /* EDSAVE-4 */
+         if (MARS_SYS_COMM0 != 0)
+             return -4;
+         if (CD_COMM12_16 != 0)
+@@ -231,7 +266,7 @@ static const uint8* picLoad(int32 n)
+     {
+         MARS_SYS_COMM2 = (uint16)(c | 0x8000);     /* no read-back */
+         CD_COMM12_16 = 0;
+-        cdCmd(CD_CMD_CHUNK_TO_CART);
++        cdCmdSafe(CD_CMD_CHUNK_TO_CART);              /* EDSAVE-4 */
+         if (MARS_SYS_COMM0 != 0 || CD_COMM12_16 != 0)
+             return NULL;
+     }
+@@ -434,8 +469,86 @@ int32 osGetSystemTimeMS()
  #define CS_EVEN(x)      (((x) + 1) & ~1)
  
  
@@ -25,27 +86,24 @@ diff --git a/src/platform/32x/main.cpp b/src/platform/32x/main.cpp
 +static int32 csPieceOf(uint32 ofs);
 +static uint32 csPieceBase(int32 piece);
 +
-+/* EDSAVE-2: the slave SH2 idle and its sound DMA off while the 68000 holds the cart (RV = 1) for a
-+   save command.  The level loads always did this (MARS_WAIT, sfxBankStop) and run dozens of such
-+   copies; the saves did not, and on the console a copy made while the slave draws and mixes froze
-+   the game (25 Oct 2026, the passport: a few reads of the save bank, then nothing).  Nested, so a
-+   run of commands parks once. */
-+void sfxBankStop();
-+void sfxBankStart();
-+int32 sfxBankOn();
-+static int32 csParkDepth = 0, csSfxWas = 0;
++/* EDSAVE-2/4: the slave SH2 parked for a save command - first (EDSAVE-2) only between commands with
++   its mixer stopped, which was not enough: it still fetched its idle loop from the cart.  Now
++   (EDSAVE-4) it goes into the SDRAM loop (MARS_CMD_PARK, acknowledged with PARK_ACK) and the master
++   issues the command only once it is there; csUnpark lets it out (COMM4 = 0).  Nested, so a run of
++   commands parks once.  Its sound DMA keeps running (it reads SDRAM); its interrupt waits. */
++static int32 csParkDepth = 0;
 +static void csPark()
 +{
 +    if (csParkDepth++ == 0)
 +    {
-+        csSfxWas = sfxBankOn();
-+        sfxBankStop();                           /* the DMA 1 -> PWM mixer off (it reads the cart) */
-+        MARS_WAIT();                             /* the slave between commands: no cart reads */
++        MARS_WAIT();                             /* the slave between commands */
++        MARS_SYS_COMM4 = MARS_CMD_PARK;
++        while (MARS_SYS_COMM4 != MARS_CMD_PARK_ACK) marsIdle();   /* ... and in SDRAM */
 +    }
 +}
 +static void csUnpark()
 +{
-+    if (--csParkDepth == 0 && csSfxWas) sfxBankStart();
++    if (--csParkDepth == 0) MARS_SYS_COMM4 = 0;
 +}
 +
 +static void saveBankQuery()
@@ -67,8 +125,8 @@ diff --git a/src/platform/32x/main.cpp b/src/platform/32x/main.cpp
 +        if (piece != rdPiece)
 +        {
 +            MARS_SYS_COMM2 = (uint16)piece;
-+            csPark();                            /* EDSAVE-2 */
-+            cdCmd(CS_CMD_PIECE_IN);
++            csPark();                            /* EDSAVE-2/4 */
++            cdCmdSafe(CS_CMD_PIECE_IN);
 +            csUnpark();
 +            rdPiece = piece;
 +        }
@@ -91,7 +149,7 @@ diff --git a/src/platform/32x/main.cpp b/src/platform/32x/main.cpp
      volatile uint16* s = (volatile uint16*)(CS_BASE + ofs);
      for (int32 i = 0; i < len; i += 2)
      {
-@@ -469,6 +550,15 @@
+@@ -469,6 +582,15 @@ static uint32 csPieceBase(int32 piece)
      return (piece & CS_SLOT_PIECE) ? CS_SLOTS + uint32(piece & 31) * CS_PIECE : CS_SET + uint32(piece) * CS_PIECE;
  }
  
@@ -107,12 +165,13 @@ diff --git a/src/platform/32x/main.cpp b/src/platform/32x/main.cpp
  static void csFlushPiece()
  {
      if (csPiece < 0 || !csDirty) return;
-@@ -480,9 +570,13 @@
+@@ -480,9 +602,13 @@ static void csFlushPiece()
      }
      MARS_SYS_COMM2 = (uint16)csPiece;
      CD_COMM12_16 = 0;
-+    csPark();                                        /* EDSAVE-2 */
-     cdCmd(CS_CMD_TO_CART);
+-    cdCmd(CS_CMD_TO_CART);
++    csPark();                                        /* EDSAVE-2/4 */
++    cdCmdSafe(CS_CMD_TO_CART);
 +    csUnpark();
      if ((CD_COMM12_16 & 0xFF) != 1) csOk = false;
 -    if ((csPiece & CS_SLOT_PIECE) && CD_COMM12_16 != 0x101) csOk = false;   /* SLOTS-1 */
@@ -122,7 +181,7 @@ diff --git a/src/platform/32x/main.cpp b/src/platform/32x/main.cpp
      csDirty = false;
  }
  
-@@ -521,6 +615,12 @@
+@@ -521,6 +647,12 @@ static bool cartWrite(uint32 ofs, const uint8* src, int32 len)
  
  static uint32 cartRead32(uint32 ofs)
  {
@@ -135,7 +194,7 @@ diff --git a/src/platform/32x/main.cpp b/src/platform/32x/main.cpp
      volatile uint16* s = (volatile uint16*)(CS_BASE + ofs);
      return ((uint32)s[0] << 16) | s[1];
  }
-@@ -594,6 +694,8 @@
+@@ -594,6 +726,8 @@ int32 osSaveSlots()                         /* the number of slots (0: the old s
  #ifdef CD32X_NO_SLOTS
      return 0;
  #else
@@ -144,7 +203,7 @@ diff --git a/src/platform/32x/main.cpp b/src/platform/32x/main.cpp
      if (gSlotsOk < 0)
      {
          csFlushPiece();
-@@ -610,7 +712,14 @@
+@@ -610,7 +744,14 @@ int32 osSaveSlots()                         /* the number of slots (0: the old s
  #endif
  }
  
@@ -160,7 +219,7 @@ diff --git a/src/platform/32x/main.cpp b/src/platform/32x/main.cpp
  {
      uint32 b = slotBase(slot);
      if (cartRead32(b) != 0x4F4C474D) return -1;                /* 'OLGM' */
-@@ -622,6 +731,23 @@
+@@ -622,6 +763,23 @@ int32 osSaveSlotLevel(int32 slot)           /* the level saved in a slot, -1 = e
      return tmp.level;
  }
  
@@ -184,11 +243,13 @@ diff --git a/src/platform/32x/main.cpp b/src/platform/32x/main.cpp
  bool osCheckSave()
  {
      return osSaveSlotLevel(gSaveSlot) >= 0;
-@@ -1116,6 +1242,7 @@
- void sfxBankStop();
- #include "fmv.inc"                  /* FMV-1: the movie player (osPlayVideo, fmvAudio) */
- #include "sfx.inc"                  /* SFX-2: the sound effects through the 32X PWM */
-+int32 sfxBankOn() { return gSfxOn; }   /* EDSAVE-2: for csPark */
+@@ -1203,6 +1361,9 @@ extern "C" void secondary()
+             case MARS_CMD_SFX_STOP:
+                 sfxStop();
+                 break;
++            case MARS_CMD_PARK:             /* EDSAVE-4: into SDRAM until the master lets go */
++                csSpin(&MARS_SYS_COMM4, MARS_CMD_PARK_ACK, 1, MARS_CMD_PARK_ACK);
++                continue;                   /* COMM4 is the master's to clear */
  #endif
+         }
  
- extern "C" void pri_vbi_handler()

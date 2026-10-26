@@ -81,8 +81,11 @@ if ! grep -q "CART-ED" "$ENGINE/carttest.inc"; then
 fi
 # EDSAVE-1: the saves through the Sub-CPU when they are in the EverDrive's save bank.  Applied with
 # EDCD_SAVE=1, taken out again without it, so a build without EDCD_SAVE is the game as before (saves in the cart)
-if [ "${EDCD_SAVE:-0}" = 1 ] && ! grep -q "EDSAVE-1" "$ENGINE/main.cpp"; then
-  echo "==> applying engine/openlara-edsave.patch to OpenLara-src (EDSAVE-1: saves on the EverDrive's SD card)"
+if [ "${EDCD_SAVE:-0}" = 1 ] && ! grep -q "EDSAVE-4" "$ENGINE/main.cpp"; then
+  if grep -q "EDSAVE-1" "$ENGINE/main.cpp"; then
+    echo "*** an older EDSAVE patch is in OpenLara-src: git -C $ENGINE/../../.. checkout src/platform/32x/main.cpp first"; exit 1
+  fi
+  echo "==> applying engine/openlara-edsave.patch to OpenLara-src (EDSAVE-1/4: saves on the EverDrive's SD card)"
   git -C "$ENGINE/../../.." apply "$HERE/../engine/openlara-edsave.patch"
 elif [ "${EDCD_SAVE:-0}" != 1 ] && grep -q "EDSAVE-1" "$ENGINE/main.cpp"; then
   echo "==> taking engine/openlara-edsave.patch out of OpenLara-src (no EDCD_SAVE: saves in the cart, as before)"

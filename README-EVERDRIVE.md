@@ -106,10 +106,16 @@ go to that cart, as the game asks the Sub-CPU where they are).
 goes through the Sub-CPU (CMD 62 brings a 4 KB piece into its buffer, CMD 57 hands out the words);
 writes went through it already (CMD 58 + 61). The passport asks every listed slot for its level on
 every frame, so those answers are read once and kept (a save forgets them) - without that the Save
-page, 16 slots long, brought the game to a crawl on the console. And every save command parks the
-slave SH2 and stops its PWM mixer first, as the level loads always did: a 68000 copy with RV on while
-the slave draws and its sound DMA reads the cart locked both SH2s (console, 25 Oct 2026, every time
-the passport opened; the raw accesses themselves are fine, `edsave2`). The cartridge-boot listener reaches the bank as cart
+page, 16 slots long, brought the game to a crawl on the console. And for every command whose 68000
+side holds RV = 1 (a level chunk, CMD 46; the save bank, CMD 61/62) **both SH2s wait in a loop that
+lives in SDRAM with their interrupts masked** (EDSAVE-4): the slave is sent there first (`MARS_CMD_PARK`,
+acknowledged), the master follows, and nothing touches the cart until the Sub-CPU reports the copy
+done. Measured on the console (`edsave3`, 26 Oct 2026): on the EverDrive an SH2's cart access during
+RV = 1 is not held until RV = 0, as the 32X manual implies and the stack assumed - it is answered at
+once with garbage (the slave read ~100% bad words through every such copy, the master too). Any code
+fetch in those milliseconds kills the SH2 a moment later: that was the passport freeze, which came in
+the game (cold cache) and not at the title (the poll loop cached), with a PSRAM bank and with window 7
+just the same. The cartridge-boot listener reaches the bank as cart
 `0x800000`-`0x83FFFF` through window 1 (hw_md.s MODE1-7), the way it reaches window 0. The launcher's
 header declares save RAM (`RA`), which is what makes the EverDrive OS keep `bram.srm`. Measured with
 the CD32X BootCamp's `edsave/EDSAVE1.32X`: three menu round trips, banks 0 and 7 blank each time,
