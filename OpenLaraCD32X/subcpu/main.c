@@ -276,6 +276,22 @@ static int ol_game_running = 0;   /* OL-2b: STATE 4B10 seen - no more per-pass t
 #ifndef OL_CART_ED
 #define OL_CART_ED 0                     /* CART-ED: 1 = the Mega EverDrive PRO cart test build (CART=ED) */
 #endif
+#ifndef OL_EDSAVE
+#define OL_EDSAVE 0                      /* EDSAVE-1 (Makefile EDSAVE=1, with CART=ED MODE1=1): the settings
+                                            and the save slots in the EverDrive's save bank (bank 31, kept
+                                            on the SD card as bram.srm) instead of the cart's PSRAM, which
+                                            the EverDrive menu wipes.  The cartridge-boot listener (hw_md.s
+                                            MODE1-7, M1SAVE=1) reaches that bank as cart 0x800000. */
+#endif
+#if OL_EDSAVE
+#define ED_SAVE_68K   0x800000UL         /* EDSAVE-1: the save bank as the 68000 side addresses it */
+/* the bank's layout: the 64 KB save area (settings, old single save, records) at 0, the 16 slots at
+   0x10000 - the same piece numbers as before (CMD 61: bit 8 = a slot piece) */
+static uint32_t ed_save_off(int piece)
+{
+    return (piece & 0x100) ? 0x10000UL + (uint32_t)(piece & 31) * 4096 : (uint32_t)(piece & 15) * 4096;
+}
+#endif
 
 static uint32_t saved_lba = 0;
 /* K10: length of the file opened by CMD 38, kept here (like saved_lba) so CMD 50 never has
@@ -1200,9 +1216,17 @@ int main(void)
             volatile uint8_t *wr = (volatile uint8_t *)0x0C0000;
             for (k = 0; k < 4096; k++) wr[k] = bram_buf[k];
             switch_banks();
+#if OL_EDSAVE
+            /* EDSAVE-1: into the EverDrive's save bank, and read back from it (both through the
+               listener's window-1 route: RV = 1, W on for the write only) */
+            (void)coff;
+            do_md_cmd3(MD_CMD_CHILLY_RV_MEMCPY, ED_SAVE_68K + ed_save_off(piece), 0x200000, 4096);
+            do_md_cmd3(MD_CMD_CHILLY_RV_MEMCPY, 0x208000, ED_SAVE_68K + ed_save_off(piece), 4096);
+#else
             do_md_cmd3(MD_CMD_CHILLY_RV_MEMCPY, 0x400000 + coff, 0x200000, 4096);
             do_md_cmd2(MD_CMD_WRITE_32X_16, 0xA15104, (int)(coff >> 20) & 3);
             do_md_cmd3(MD_CMD_CHILLY_MEMCPY, 0x208000, 0x900000 + (coff & 0xFFFFF), 4096);
+#endif
             switch_banks();
             {
                 volatile uint8_t *cart = (volatile uint8_t *)0x0C8000;
@@ -1212,9 +1236,34 @@ int main(void)
 #if OL_SLOTS
             if (ok && slot_area) ok = 0x101;        /* SLOTS-1 */
 #endif
+#if OL_EDSAVE
+            if (ok) ok |= 0x200;                    /* EDSAVE-1: it went to the save bank */
+#endif
             do_md_cmd2(MD_CMD_WRITE_32X_16, 0xA1512C, ok);
             do_md_cmd2(MD_CMD_WRITE_32X_16, 0xA15120, 0);
         }
+#if OL_CART_ED
+        else if (cmd == 62) {
+            /* EDSAVE-1 - CMD 62 "save piece in": COMM2 = a piece (as CMD 61 numbers them) -> the 4 KB
+               buffer, which the SH2 then reads word by word with CMD 57; COMM2 = 0x8000 asks only what
+               this Sub-CPU does.  Reply COMM12: 1 | 0x100 (save slots, SLOTS-1) | 0x200 (the saves
+               are in the EverDrive's save bank: read them this way, the cart has none). */
+            int piece = do_md_cmd1(MD_CMD_READ_32X_16, 0xA15122);
+            int caps = 1 | (OL_SLOTS ? 0x100 : 0) | (OL_EDSAVE ? 0x200 : 0);
+#if OL_EDSAVE
+            if (piece != 0x8000) {
+                int k;
+                volatile uint8_t *rd = (volatile uint8_t *)0x0C8000;
+                switch_banks();
+                do_md_cmd3(MD_CMD_CHILLY_RV_MEMCPY, 0x208000, ED_SAVE_68K + ed_save_off(piece), 4096);
+                switch_banks();
+                for (k = 0; k < 4096; k++) bram_buf[k] = rd[k];
+            }
+#endif
+            do_md_cmd2(MD_CMD_WRITE_32X_16, 0xA1512C, caps);
+            do_md_cmd2(MD_CMD_WRITE_32X_16, 0xA15120, 0);
+        }
+#endif
 #if OL_CART_MB
         else if (cmd == 68) {
             /* CART-1 (test builds only: CART=8 / CART=16 bash build.sh) - CMD 68 "cart page":

@@ -70,6 +70,14 @@ endif
 ifneq ($(M1CTRL0),)
 ASFLAGS += --defsym OL_M1CTRL0=$(M1CTRL0)
 endif
+# MODE1-7 / EDSAVE-1: M1SAVE=1 the listener reaches the EverDrive's save bank (cart 0x800000 = bank 31,
+# kept on the SD card); EDSAVE=1 the Sub-CPU keeps OpenLara's settings and save slots there (CMD 61/62)
+ifeq ($(M1SAVE),1)
+ASFLAGS += --defsym OL_M1SAVE=1
+endif
+ifeq ($(EDSAVE),1)
+HWFLAGS += -DOL_EDSAVE=1
+endif
 endif
 
 PREFIX = $(ROOTDIR)/m68k-elf/bin/m68k-elf-

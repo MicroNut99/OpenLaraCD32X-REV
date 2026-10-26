@@ -19,8 +19,11 @@ take that cart's place, and gives the game **16 MB** to work with instead of 4.
 - **Not a cartridge version of the game.** Levels, music and movies still come from the CD.
 - **Not the EverDrive's "Run Mega-CD".** That plays CD images and gives the game a save-RAM cart, not
   this memory. Start `EDCD.32X` instead.
-- **Not battery-backed.** The RAM cart keeps saves without power; expect the EverDrive to lose them at
-  power-off.
+- **Not a RAM cart that keeps anything.** The EverDrive wipes its 16 MB (PSRAM) every time its menu
+  runs - measured, 25 Oct 2026. So the saves do not live there: with `EDCD_SAVE=1` they live in the
+  EverDrive's battery RAM (its bank 31), which the EverDrive OS keeps on the SD card as
+  `MEGA/gamedata/EDCD.32X/bram.srm` (256 KB). Settings and all 16 save slots. The cart's fast-load
+  records are wiped with the cart, so every launch loads from the CD.
 - **Not using the extra 12 MB in the game yet.** The game runs in the 4 MB cart's layout; only the
   cart test reaches past it. Keeping levels in the extra memory is the next step.
 - **Not for the 16MB-PCB-CD32X board.** Different registers: don't run the `CART=ED` disc on that board, or
@@ -73,8 +76,11 @@ From the folder that holds `build.sh`, with the CD32X BootCamp checked out next 
 otherwise) and the usual toolchain settings:
 
 ```bash
-CART=ED EDCD=1 bash build.sh
+CART=ED EDCD=1 EDCD_SAVE=1 bash build.sh
 ```
+
+`EDCD_SAVE=1` (EDSAVE-1) puts the saves on the SD card, see above; without it they go to the cart and
+are lost at the next launch.
 
 | It makes | What to do with it |
 |---|---|
@@ -93,7 +99,16 @@ CART=ED EDCD=1 bash build.sh
 | Red / yellow | the Sega CD's processor did not start / did not hand over |
 
 `EDCD.32X` belongs to this disc: it carries this disc's Sub-CPU program. Rebuild it when the Sub-CPU side
-changes; the disc stays. The disc also boots the normal way with a RAM cart (4 MB layout).
+changes; the disc stays. The disc also boots the normal way with a RAM cart (4 MB layout; the saves then
+go to that cart, as the game asks the Sub-CPU where they are).
+
+**How the SD-card saves work (EDSAVE-1):** the SH2 cannot see bank 31, so every read of the save area
+goes through the Sub-CPU (CMD 62 brings a 4 KB piece into its buffer, CMD 57 hands out the words);
+writes went through it already (CMD 58 + 61). The cartridge-boot listener reaches the bank as cart
+`0x800000`-`0x83FFFF` through window 1 (hw_md.s MODE1-7), the way it reaches window 0. The launcher's
+header declares save RAM (`RA`), which is what makes the EverDrive OS keep `bram.srm`. Measured with
+the CD32X BootCamp's `edsave/EDSAVE1.32X`: three menu round trips, banks 0 and 7 blank each time,
+bank 31 intact, `bram.srm` on the card.
 
 **The cart test:** on the title, Graphics (the sunglasses) → Cart Test → A. Expected: `FOUND 16MB`,
 `PAGE 1 B04-07 OK` … `PAGE 6 B24-27 OK`, `SAVE AREA UNCHANGED`. Then A loads a level into every page.

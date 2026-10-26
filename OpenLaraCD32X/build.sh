@@ -9,6 +9,10 @@
 #                            -> subcpu/CDROMPlayer_cartED_music.cue; with EDCD=1 below
 #   EDCD=1 bash build.sh     also subcpu/EDCD.32X: the disc started from the Mega EverDrive PRO, which stays
 #                            (EDCD_X=1: CTRL0 with the EverDrive's X bit; EDCD_W0=<bank>: the game in that bank)
+#   EDCD_SAVE=1              with EDCD=1: the saves on the SD card (EDSAVE-1) - the settings and the 16 save
+#                            slots in the EverDrive's bank 31, which its OS keeps as bram.srm; the launcher's
+#                            header declares save RAM.  Needed: the EverDrive wipes its PSRAM (banks 0-29,
+#                            where the saves were) every time its menu runs.
 #                            the cartridge (MODE1-1; the builder is in the CD32X BootCamp: BOOTCAMP=<folder>,
 #                            default ../CD32X-BootCamp; its docs/12).  The disc still boots the normal way.
 #                            For the EverDrive: CART=ED EDCD=1 bash build.sh
@@ -70,6 +74,11 @@ fi
 if ! grep -q "CART-ED" "$ENGINE/carttest.inc"; then
   echo "==> applying engine/openlara-cart-ed.patch to OpenLara-src (CART-ED: the EverDrive PRO cart test)"
   git -C "$ENGINE/../../.." apply "$HERE/../engine/openlara-cart-ed.patch"
+fi
+# EDSAVE-1: the saves through the Sub-CPU when they are in the EverDrive's save bank (does nothing without CART=ED)
+if ! grep -q "EDSAVE-1" "$ENGINE/main.cpp"; then
+  echo "==> applying engine/openlara-edsave.patch to OpenLara-src (EDSAVE-1: saves on the EverDrive's SD card)"
+  git -C "$ENGINE/../../.." apply "$HERE/../engine/openlara-edsave.patch"
 fi
 if [ "$CART" = "ED" ]; then echo "==> CART TEST BUILD: Mega EverDrive PRO (CART-ED)";
 elif [ -n "$CART" ]; then echo "==> CART TEST BUILD: ${CART} MB"; fi
@@ -143,7 +152,7 @@ if [ "${EDCD:-0}" = 1 ]; then
   T=$(mktemp -d); mkdir -p "$T/subcpu/ROMS" "$T/sh2"
   find "$HERE/subcpu" -maxdepth 1 -type f -exec cp {} "$T/subcpu/" \;
   cp "$HERE/sh2/CDLOADER.32x" "$T/sh2/"
-  ( cd "$T/subcpu" && make clean > /dev/null && make CDROMPlayer.bin MODE1=1 M1CTRL0=$([ "${EDCD_X:-0}" = 1 ] && echo 0xC000 || echo 0x8000) ${EDCD_W0:+M1W0BANK=$EDCD_W0} ${M1WORDS:+M1WORDS=$M1WORDS} ${CART:+CART=$CART} ${STREAM:+STREAM=$STREAM} ${SLOTS:+SLOTS=$SLOTS} ${FMVRING:+FMVRING=$FMVRING} ${CARTW:+CARTW=$CARTW} ${UB:+UB=$UB} > "$T/mode1.log" 2>&1 ) \
+  ( cd "$T/subcpu" && make clean > /dev/null && make CDROMPlayer.bin MODE1=1 M1CTRL0=$([ "${EDCD_X:-0}" = 1 ] && echo 0xC000 || echo 0x8000) ${EDCD_W0:+M1W0BANK=$EDCD_W0} ${EDCD_SAVE:+M1SAVE=$EDCD_SAVE EDSAVE=$EDCD_SAVE} ${M1WORDS:+M1WORDS=$M1WORDS} ${CART:+CART=$CART} ${STREAM:+STREAM=$STREAM} ${SLOTS:+SLOTS=$SLOTS} ${FMVRING:+FMVRING=$FMVRING} ${CARTW:+CARTW=$CARTW} ${UB:+UB=$UB} > "$T/mode1.log" 2>&1 ) \
     || { tail -20 "$T/mode1.log"; echo "*** the MODE1 Sub-CPU program did not build"; exit 1; }
   bash "$BC/edboot/build_edcd.sh" "$T/subcpu/CDROMPlayer.bin" "$HERE/sh2/CDLOADER.32x" "$HERE/subcpu/EDCD.32X"
   rm -rf "$T"

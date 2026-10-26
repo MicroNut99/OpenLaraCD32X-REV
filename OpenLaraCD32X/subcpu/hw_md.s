@@ -52,6 +52,17 @@
         .ifndef OL_M1W0BANK
         .equ    OL_M1W0BANK, 0
         .endif
+| MODE1-7 (M1SAVE=1, with MODE1=1): the EverDrive's save bank.  Bank 31 is the EverDrive PRO's battery
+| RAM, which its OS keeps on the SD card (MEGA/gamedata/<launcher>/bram.srm, 256 KB) when the launcher's
+| header declares save RAM; the 16 MB of banks 0-29 are PSRAM, which the OS wipes every time it returns
+| to its menu (edsave, console, 25 Oct 2026).  A copy whose cart side is 0x800000-0x83FFFF goes to or
+| from that bank: window 1 = bank 31 for the block, the copy at 0x080000 + (address - 0x800000),
+| window 1 = bank 1 again - the window-1 route of MODE1-3 with another bank.  Only the first 256 KB:
+| the OS keeps its own things above.  Not set: m1_cart assembles exactly as before.
+        .ifndef OL_M1SAVE
+        .equ    OL_M1SAVE, 0
+        .endif
+        .equ    OL_M1SAVEBANK, 31
 | MODE1-6: the EverDrive's write-enable bit (CTRL0 bit 13, W) is OFF except inside a copy INTO the
 | cart.  Console, 25 Oct 2026 (edw0): with W on, some of the 68000's writes to OTHER addresses (work
 | RAM, the VDP, the gate array - what a listener does all the time) land in the cart, and the SH2's
@@ -1553,6 +1564,42 @@ m1_xfer:
 
 | the cart side of a block: d4 = 0 the cart is a1, else a0.  In window 0 -> through window 1.
 m1_cart:
+        .if OL_M1SAVE
+| MODE1-7: a3 = what to add to the address for the copy, d1 = the bank window 1 shows meanwhile
+        tst.w   d4
+        bne.b   1f
+        move.l  a1,d1
+        bra.b   2f
+1:      move.l  a0,d1
+2:      cmpi.l  #0x800000,d1
+        blo.b   3f
+        cmpi.l  #0x840000,d1
+        bhs     m1_rvcpy                /* above the save bank's 256 KB: never sent */
+        movea.l #0x080000-0x800000,a3   /* the save bank, through window 1 */
+        moveq   #OL_M1SAVEBANK,d1
+        bra.b   4f
+3:      cmpi.l  #0x080000,d1
+        bhs     m1_rvcpy
+        movea.l #0x080000,a3            /* window 0, through window 1 (MODE1-3) */
+        move.w  #OL_M1W0BANK,d1
+4:      move.w  sr,-(sp)
+        move.w  #0x2700,sr
+        bset    #0,0xA15107
+        move.w  d1,0xA130F2             /* window 1 = that bank */
+        tst.w   d4
+        bne.b   5f
+        adda.l  a3,a1
+        bsr.b   m1_cpy_w                /* a write into the cart: W on inside */
+        suba.l  a3,a1
+        bra.b   6f
+5:      adda.l  a3,a0
+        bsr.b   m1_cpy                  /* a read from the cart: W stays off */
+        suba.l  a3,a0
+6:      move.w  #1,0xA130F2             /* window 1 = bank 1 again */
+        bclr    #0,0xA15107
+        move.w  (sp)+,sr
+        rts
+        .else
         tst.w   d4
         bne.b   1f
         cmpa.l  #0x080000,a1
@@ -1576,6 +1623,7 @@ m1_cart:
         bclr    #0,0xA15107
         move.w  (sp)+,sr
         rts
+        .endif
 
 | d2 bytes (a0)+ -> (a1)+, in bytes (d3 = 0) or words (d3 = 1); with RV = 1 and no interrupt.
 | d4 = 0: the cart is the destination (W on inside the copy); else a read of the cart (W off).

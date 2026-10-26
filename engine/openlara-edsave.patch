@@ -1,0 +1,114 @@
+diff --git a/src/platform/32x/main.cpp b/src/platform/32x/main.cpp
+--- a/src/platform/32x/main.cpp
++++ b/src/platform/32x/main.cpp
+@@ -434,8 +434,64 @@
+ #define CS_EVEN(x)      (((x) + 1) & ~1)
+ 
+ 
++/* ---------------------------------------------------------------------------------------
++ * EDSAVE-1 (CART=ED builds, CD32X_CART_ED): the Mega EverDrive PRO wipes its PSRAM - the whole
++ *   RAM cart - every time its menu runs, so a save there never outlived the session.  Its bank
++ *   31 is battery RAM that the EverDrive OS keeps on the SD card (bram.srm); the cartridge-boot
++ *   Sub-CPU (EDSAVE=1) puts the save area and the slots there, with the same piece numbers.
++ *   The SH2 cannot see that bank, so every read of a save piece goes through the Sub-CPU:
++ *   CMD 62 brings the piece into its 4 KB buffer, CMD 57 hands out its words.  Writes were
++ *   through the Sub-CPU already (CMD 58 + 61).  CMD 62 with COMM2 = 0x8000 only asks: bit 9
++ *   set = the saves are in the bank (gSaveBank 1), else the cart is read directly as before.
++ * --------------------------------------------------------------------------------------- */
++#ifndef CD32X_CART_ED
++#define CD32X_CART_ED 0
++#endif
++#define CS_CMD_GET      57
++#define CS_CMD_PIECE_IN 62
++static int32 gSaveBank = CD32X_CART_ED ? -1 : 0;   /* -1 not asked yet, 0 the cart, 1 the bank */
++static int32 rdPiece = -1;                         /* the piece in the Sub-CPU's buffer */
++static int32 csPieceOf(uint32 ofs);
++static uint32 csPieceBase(int32 piece);
++
++static void saveBankQuery()
++{
++    MARS_SYS_COMM2 = 0x8000;
++    CD_COMM12_16 = 0;
++    cdCmd(CS_CMD_PIECE_IN);
++    gSaveBank = (CD_COMM12_16 & 0x200) ? 1 : 0;
++}
++
++static void saveBankRead(uint32 ofs, uint8* dst, int32 len)            /* ofs even */
++{
++    while (len > 0)
++    {
++        int32 piece = csPieceOf(ofs);
++        uint32 base = csPieceBase(piece);
++        int32 o = int32(ofs - base);
++        int32 n = (len < 4096 - o) ? len : (4096 - o);
++        if (piece != rdPiece)
++        {
++            MARS_SYS_COMM2 = (uint16)piece;
++            cdCmd(CS_CMD_PIECE_IN);
++            rdPiece = piece;
++        }
++        for (int32 i = 0; i < n; i += 2)
++        {
++            MARS_SYS_COMM2 = (uint16)((o + i) >> 1);
++            cdCmd(CS_CMD_GET);
++            uint16 w = MARS_SYS_COMM8;
++            dst[i] = (uint8)(w >> 8);
++            if (i + 1 < n) dst[i + 1] = (uint8)w;
++        }
++        ofs += n; dst += n; len -= n;
++    }
++}
++
+ static void cartRead(uint32 ofs, uint8* dst, int32 len)               /* ofs even */
+ {
++    if (gSaveBank < 0) saveBankQuery();                                /* EDSAVE-1 */
++    if (gSaveBank > 0) { saveBankRead(ofs, dst, len); return; }
+     volatile uint16* s = (volatile uint16*)(CS_BASE + ofs);
+     for (int32 i = 0; i < len; i += 2)
+     {
+@@ -469,6 +525,13 @@
+     return (piece & CS_SLOT_PIECE) ? CS_SLOTS + uint32(piece & 31) * CS_PIECE : CS_SET + uint32(piece) * CS_PIECE;
+ }
+ 
++static int32 csPieceOf(uint32 ofs)                   /* EDSAVE-1: the piece an offset is in */
++{
++    return (ofs >= CS_SLOTS && ofs < CS_SLOTS + CS_SLOT_COUNT * CS_SLOT_SIZE)
++         ? (CS_SLOT_PIECE | int32((ofs - CS_SLOTS) >> 12))
++         : int32(ofs - CS_SET) >> 12;
++}
++
+ static void csFlushPiece()
+ {
+     if (csPiece < 0 || !csDirty) return;
+@@ -482,7 +545,8 @@
+     CD_COMM12_16 = 0;
+     cdCmd(CS_CMD_TO_CART);
+     if ((CD_COMM12_16 & 0xFF) != 1) csOk = false;
+-    if ((csPiece & CS_SLOT_PIECE) && CD_COMM12_16 != 0x101) csOk = false;   /* SLOTS-1 */
++    if ((csPiece & CS_SLOT_PIECE) && (CD_COMM12_16 & 0x1FF) != 0x101) csOk = false;   /* SLOTS-1 */
++    rdPiece = -1;                                    /* EDSAVE-1: the Sub-CPU's buffer is ours now */
+     csDirty = false;
+ }
+ 
+@@ -521,6 +585,12 @@
+ 
+ static uint32 cartRead32(uint32 ofs)
+ {
++    if (gSaveBank != 0)                              /* EDSAVE-1 */
++    {
++        uint8 b[4];
++        cartRead(ofs, b, 4);
++        return ((uint32)b[0] << 24) | ((uint32)b[1] << 16) | ((uint32)b[2] << 8) | b[3];
++    }
+     volatile uint16* s = (volatile uint16*)(CS_BASE + ofs);
+     return ((uint32)s[0] << 16) | s[1];
+ }
+@@ -594,6 +664,8 @@
+ #ifdef CD32X_NO_SLOTS
+     return 0;
+ #else
++    if (gSlotsOk < 0 && gSaveBank < 0) saveBankQuery();   /* EDSAVE-1 */
++    if (gSlotsOk < 0 && gSaveBank > 0) gSlotsOk = 1;      /* EDSAVE-1: the bank's Sub-CPU has the slots */
+     if (gSlotsOk < 0)
+     {
+         csFlushPiece();

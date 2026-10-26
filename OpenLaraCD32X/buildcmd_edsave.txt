@@ -1,0 +1,2 @@
+cd /mnt/s/KoboPort/sega-toolchain-12.1/sega/OpenLaraCD32X-REV
+CART=ED EDCD=1 EDCD_SAVE=1 BOOTCAMP=/mnt/s/KoboPort/sega-toolchain-12.1/sega/CD32X-BootCamp bash /mnt/s/KoboPort/sega-toolchain-12.1/sega/OpenLaraCD32X-REV/build.sh 2>&1 | tee /mnt/s/KoboPort/sega-toolchain-12.1/sega/OpenLaraCD32X-REV/build_edsave_log.txt
