@@ -106,7 +106,10 @@ go to that cart, as the game asks the Sub-CPU where they are).
 goes through the Sub-CPU (CMD 62 brings a 4 KB piece into its buffer, CMD 57 hands out the words);
 writes went through it already (CMD 58 + 61). The passport asks every listed slot for its level on
 every frame, so those answers are read once and kept (a save forgets them) - without that the Save
-page, 16 slots long, brought the game to a crawl on the console. The cartridge-boot listener reaches the bank as cart
+page, 16 slots long, brought the game to a crawl on the console. And every save command parks the
+slave SH2 and stops its PWM mixer first, as the level loads always did: a 68000 copy with RV on while
+the slave draws and its sound DMA reads the cart locked both SH2s (console, 25 Oct 2026, every time
+the passport opened; the raw accesses themselves are fine, `edsave2`). The cartridge-boot listener reaches the bank as cart
 `0x800000`-`0x83FFFF` through window 1 (hw_md.s MODE1-7), the way it reaches window 0. The launcher's
 header declares save RAM (`RA`), which is what makes the EverDrive OS keep `bram.srm`. Measured with
 the CD32X BootCamp's `edsave/EDSAVE1.32X`: three menu round trips, banks 0 and 7 blank each time,
